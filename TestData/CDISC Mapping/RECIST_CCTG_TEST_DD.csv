@@ -1,0 +1,8 @@
+Name,Type,Description,Keywords,CDE
+﻿PT_INIT,pid,"",﻿PT INIT,""
+LES_ASSES_Q,enum,"",LES ASSES Q,""
+LES_ASS_REAS,enum,"",LES ASS REAS,""
+LES_ASS_REAS_OTHER,enum,"",LES ASS REAS OTHER,""
+RSP_STAT,enum,"",RSP STAT,""
+RSP_CONF_Q,enum,"",RSP CONF Q,""
+LES_TAR_Q,enum,"",LES TAR Q,""

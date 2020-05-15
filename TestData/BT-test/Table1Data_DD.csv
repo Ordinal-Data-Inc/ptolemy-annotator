@@ -1,0 +1,4 @@
+Name,Type,Description,Keywords,CDE
+PID,pid,"",PID,""
+Gender,enum,"",Gender,""
+Age,number,"",Age,""

@@ -1,0 +1,67 @@
+version: '3'
+services:
+  pt-annotator:
+    build: Annotator
+    command: bundle exec puma -p 3000 -w 2
+    volumes:
+      - ./Annotator:/app
+    ports:
+      - 3000:3000
+    env_file: ./Annotator/dev.env
+    depends_on:
+      - postgres
+      - monetdb
+      - neo4j
+    networks:
+      - app
+
+  postgres:
+    build: postgres
+    volumes:
+      - data-postgres:/var/lib/postgresql/data
+    ports:
+      - 5432:5432
+    environment:
+      - POSTGRES_USER=scdev
+      - POSTGRES_PASSWORD=scdev
+      - POSTGRES_DB=SemanticCatalog
+    networks:
+      - app
+
+  monetdb:
+#     image: monetdb/monetdb
+    build: ./monetdb
+    volumes:
+      - data-monetdb:/var/monetdb5
+    ports:
+      - 50000:50000
+    networks:
+      - app
+
+  neo4j:
+    image: neo4j:3.5.12
+    volumes:
+      - data-neo4j:/data
+      - logs-neo4j:/logs
+    environment:
+      - NEO4J_AUTH=none
+    ports:
+      - 7473:7473
+      - 7687:7687
+      - 3637:3637
+      - 7474:7474
+    networks:
+      - app
+
+volumes:
+  data-postgres:
+    driver: local
+  data-monetdb:
+    driver: local
+  data-neo4j:
+    driver: local
+  logs-neo4j:
+    driver: local
+
+networks:
+  app:

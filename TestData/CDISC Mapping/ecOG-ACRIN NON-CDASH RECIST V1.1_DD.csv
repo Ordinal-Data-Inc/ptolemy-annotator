@@ -1,0 +1,8 @@
+Name,Type,Description,Keywords,CDE
+﻿PT_INIT,pid,"",﻿PT INIT,""
+Lesion_Site_Number_PID4356_V3_0,number,"",Lesion Site Number PID4356 V3 0,""
+Lesion_Measurable_Evaluation_Anatomic_Site_PID2003735_V3_0,enum,"",Lesion Measurable Evaluation Anatomic Site PID2003735 V3 0,""
+Lesion_Anatomic_Site_PID4364_V3_0,enum,"",Lesion Anatomic Site PID4364 V3 0,""
+Assessment_Method_Type_PID2309_V5_0,enum,"",Assessment Method Type PID2309 V5 0,""
+Lesion_Assessment_Date_PID3265_V6_0,date,"",Lesion Assessment Date PID3265 V6 0,""
+Lesion_Longest_Diameter_Measurement_PID1197_V3_0,enum,"",Lesion Longest Diameter Measurement PID1197 V3 0,""

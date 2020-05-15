@@ -1,0 +1,8 @@
+Name,Type,Description,Keywords,CDE
+﻿PT_INIT,pid,"",﻿PT INIT,""
+Location_of_the_Tumor/Lesion_PID6621372_V1_0,enum,"",Location of the Tumor Lesion PID6621372 V1 0,""
+TU_TULOCDTL,enum,"",TU TULOCDTL,""
+Tumor_Assessment_Method_RECIST_Type_PID6944023_V1_0,enum,"",Tumor Assessment Method RECIST Type PID6944023 V1 0,""
+TU_TUMETHOD_OTHSP,enum,"",TU TUMETHOD OTHSP,""
+Tumor_Assessment_Date_PID6922524_V1_0,date,"",Tumor Assessment Date PID6922524 V1 0,""
+Tumor_Long_Axis_Size_Result_PID6922528_V1_0,number,"",Tumor Long Axis Size Result PID6922528 V1 0,""

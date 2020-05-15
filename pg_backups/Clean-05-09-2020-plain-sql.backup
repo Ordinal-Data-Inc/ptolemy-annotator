@@ -1,0 +1,5373 @@
+--
+-- PostgreSQL database dump
+--
+
+-- Dumped from database version 9.5.21
+-- Dumped by pg_dump version 9.5.21
+
+-- Started on 2020-05-09 17:49:17 EDT
+
+SET statement_timeout = 0;
+SET lock_timeout = 0;
+SET client_encoding = 'SQL_ASCII';
+SET standard_conforming_strings = on;
+SELECT pg_catalog.set_config('search_path', '', false);
+SET check_function_bodies = false;
+SET xmloption = content;
+SET client_min_messages = warning;
+SET row_security = off;
+
+--
+-- TOC entry 2 (class 3079 OID 12393)
+-- Name: plpgsql; Type: EXTENSION; Schema: -; Owner: 
+--
+
+CREATE EXTENSION IF NOT EXISTS plpgsql WITH SCHEMA pg_catalog;
+
+
+--
+-- TOC entry 2592 (class 0 OID 0)
+-- Dependencies: 2
+-- Name: EXTENSION plpgsql; Type: COMMENT; Schema: -; Owner: 
+--
+
+COMMENT ON EXTENSION plpgsql IS 'PL/pgSQL procedural language';
+
+
+--
+-- TOC entry 1 (class 3079 OID 41562)
+-- Name: adminpack; Type: EXTENSION; Schema: -; Owner: 
+--
+
+CREATE EXTENSION IF NOT EXISTS adminpack WITH SCHEMA pg_catalog;
+
+
+--
+-- TOC entry 2593 (class 0 OID 0)
+-- Dependencies: 1
+-- Name: EXTENSION adminpack; Type: COMMENT; Schema: -; Owner: 
+--
+
+COMMENT ON EXTENSION adminpack IS 'administrative functions for PostgreSQL';
+
+
+--
+-- TOC entry 3 (class 3079 OID 68092)
+-- Name: pgcrypto; Type: EXTENSION; Schema: -; Owner: 
+--
+
+CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public;
+
+
+--
+-- TOC entry 2594 (class 0 OID 0)
+-- Dependencies: 3
+-- Name: EXTENSION pgcrypto; Type: COMMENT; Schema: -; Owner: 
+--
+
+COMMENT ON EXTENSION pgcrypto IS 'cryptographic functions';
+
+
+--
+-- TOC entry 4 (class 3079 OID 16465)
+-- Name: uuid-ossp; Type: EXTENSION; Schema: -; Owner: 
+--
+
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA public;
+
+
+--
+-- TOC entry 2595 (class 0 OID 0)
+-- Dependencies: 4
+-- Name: EXTENSION "uuid-ossp"; Type: COMMENT; Schema: -; Owner: 
+--
+
+COMMENT ON EXTENSION "uuid-ossp" IS 'generate universally unique identifiers (UUIDs)';
+
+
+--
+-- TOC entry 263 (class 1255 OID 41345)
+-- Name: cleanup_for_search(character varying); Type: FUNCTION; Schema: public; Owner: scdev
+--
+
+CREATE FUNCTION public.cleanup_for_search(s character varying) RETURNS character varying
+    LANGUAGE plpgsql
+    AS $$
+      DECLARE
+        new_s varchar :='';
+      begin
+        new_s = replace(s, '.',' ');
+        new_s = replace(new_s, '&',' ');
+        RETURN new_s;
+      end
+      $$;
+
+
+ALTER FUNCTION public.cleanup_for_search(s character varying) OWNER TO scdev;
+
+--
+-- TOC entry 283 (class 1255 OID 33169)
+-- Name: refresh_data_sets_ts_data(); Type: FUNCTION; Schema: public; Owner: scdev
+--
+
+CREATE FUNCTION public.refresh_data_sets_ts_data() RETURNS integer
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  did uuid;
+  count INTEGER := 0;
+begin
+  FOR did IN SELECT id FROM source_data_sets LOOP
+    PERFORM refresh_data_sets_ts_data(did);
+    count := count + 1;
+  END LOOP;
+  RETURN count;
+end
+$$;
+
+
+ALTER FUNCTION public.refresh_data_sets_ts_data() OWNER TO scdev;
+
+--
+-- TOC entry 282 (class 1255 OID 33168)
+-- Name: refresh_data_sets_ts_data(uuid); Type: FUNCTION; Schema: public; Owner: scdev
+--
+
+CREATE FUNCTION public.refresh_data_sets_ts_data(tid uuid) RETURNS integer
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    d RECORD;
+    u RECORD;
+    t RECORD;    
+    data TSVECTOR;
+    count INTEGER := 0;
+begin
+  data = ''::tsvector;
+  FOR t IN SELECT td.id as id, td.description FROM source_data_sets td where td.id=tid LOOP
+    data = data ||
+      setweight(to_tsvector('ts_config', coalesce(t.description,'')), 'A');
+                  
+      FOR u IN SELECT search_data  FROM data_elements de WHERE de.source_data_set_id=t.id LOOP
+      data = data ||
+        setweight(u.search_data, 'B');
+    END LOOP;
+    
+    count := count + 1;
+  END LOOP;
+  UPDATE source_data_sets set search_data = data WHERE id = tid;
+  RETURN count;
+end
+$$;
+
+
+ALTER FUNCTION public.refresh_data_sets_ts_data(tid uuid) OWNER TO scdev;
+
+--
+-- TOC entry 278 (class 1255 OID 16734)
+-- Name: refresh_de_ts_data(uuid); Type: FUNCTION; Schema: public; Owner: scdev
+--
+
+CREATE FUNCTION public.refresh_de_ts_data(did uuid) RETURNS integer
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    d RECORD;
+    v RECORD;    
+    data TSVECTOR;
+    count INTEGER := 0;
+    new_name varchar :='';
+begin
+  data = ''::tsvector;
+  FOR d IN SELECT de.uuid as id, de.name as name FROM data_elements de where de.uuid=did LOOP
+     
+    data = data ||
+      setweight(to_tsvector('ts_config', coalesce(cleanup_for_search(d.name),'')), 'A');
+      
+    FOR v IN SELECT ev.description as value_description, ev.name value_name  FROM data_element_values ev WHERE ev.data_element_id = d.id LOOP
+      data = data ||
+        setweight(to_tsvector('ts_config', coalesce(v.value_description,'')), 'D') ||
+        setweight(to_tsvector('ts_config', coalesce(v.value_name,'')), 'C');        
+    END LOOP;
+    count := count + 1;
+  END LOOP;
+  --raise notice 'Value: %', data;
+  UPDATE data_elements set search_data = data WHERE uuid = did;
+  RETURN count;
+end
+$$;
+
+
+ALTER FUNCTION public.refresh_de_ts_data(did uuid) OWNER TO scdev;
+
+--
+-- TOC entry 266 (class 1255 OID 16735)
+-- Name: refresh_des_ts_data(); Type: FUNCTION; Schema: public; Owner: scdev
+--
+
+CREATE FUNCTION public.refresh_des_ts_data() RETURNS integer
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+	did uuid;
+	count INTEGER := 0;
+begin
+	FOR did IN SELECT uuid FROM data_elements LOOP
+		PERFORM refresh_de_ts_data(did);
+		count := count + 1;
+	END LOOP;
+	RETURN count;
+end
+$$;
+
+
+ALTER FUNCTION public.refresh_des_ts_data() OWNER TO scdev;
+
+--
+-- TOC entry 264 (class 1255 OID 16724)
+-- Name: refresh_external_de_ts_data(integer); Type: FUNCTION; Schema: public; Owner: scdev
+--
+
+CREATE FUNCTION public.refresh_external_de_ts_data(did integer) RETURNS integer
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    d RECORD;
+    v RECORD;    
+    data TSVECTOR;
+    count INTEGER := 0;
+begin
+	data = ''::tsvector;
+	FOR d IN SELECT de.id as id, de.short_name as short_name, de.description as description, de.external_source as source, de.external_id FROM de_external_defs de where de.id=did LOOP
+		data = data ||
+			setweight(to_tsvector('ts_config', coalesce(d.short_name,'')), 'A') ||
+			setweight(to_tsvector('ts_config', coalesce(d.description,'')), 'B');
+			
+		FOR v IN SELECT ev.description as value_description, ev.name value_name  FROM external_def_values ev WHERE ev.source = d.source and ev.de_external_def_id = d.external_id LOOP
+			data = data ||
+				setweight(to_tsvector('ts_config', coalesce(v.value_description,'')), 'C') ||
+				setweight(to_tsvector('ts_config', coalesce(v.value_name,'')), 'D');
+								
+                        
+		END LOOP;
+		count := count + 1;
+	END LOOP;
+	UPDATE de_external_defs set search_data = data WHERE id = did;
+	RETURN count;
+end
+$$;
+
+
+ALTER FUNCTION public.refresh_external_de_ts_data(did integer) OWNER TO scdev;
+
+--
+-- TOC entry 265 (class 1255 OID 16725)
+-- Name: refresh_external_des_ts_data(); Type: FUNCTION; Schema: public; Owner: scdev
+--
+
+CREATE FUNCTION public.refresh_external_des_ts_data() RETURNS integer
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+	did INTEGER;
+	count INTEGER := 0;
+begin
+	FOR did IN SELECT id FROM de_external_defs LOOP
+		PERFORM refresh_external_de_ts_data(did);
+		count := count + 1;
+	END LOOP;
+	RETURN count;
+end
+$$;
+
+
+ALTER FUNCTION public.refresh_external_des_ts_data() OWNER TO scdev;
+
+--
+-- TOC entry 281 (class 1255 OID 33153)
+-- Name: refresh_translations_ts_data(); Type: FUNCTION; Schema: public; Owner: scdev
+--
+
+CREATE FUNCTION public.refresh_translations_ts_data() RETURNS integer
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  did INTEGER;
+  count INTEGER := 0;
+begin
+  FOR did IN SELECT id FROM translation_definitions LOOP
+    PERFORM refresh_translations_ts_data(did);
+    count := count + 1;
+  END LOOP;
+  RETURN count;
+end
+$$;
+
+
+ALTER FUNCTION public.refresh_translations_ts_data() OWNER TO scdev;
+
+--
+-- TOC entry 280 (class 1255 OID 33152)
+-- Name: refresh_translations_ts_data(uuid); Type: FUNCTION; Schema: public; Owner: scdev
+--
+
+CREATE FUNCTION public.refresh_translations_ts_data(tid uuid) RETURNS integer
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    d RECORD;
+    u RECORD;
+    t RECORD;    
+    data TSVECTOR;
+    count INTEGER := 0;
+begin
+  data = ''::tsvector;
+  FOR t IN SELECT td.id as id, td.name as td_name FROM translation_definitions td where td.id=tid LOOP
+    data = data ||
+      setweight(to_tsvector('ts_config', coalesce(t.td_name,'')), 'A');
+                  
+      FOR u IN SELECT alias  FROM transformation_units tu WHERE tu.translation_definition_id=t.id LOOP
+      data = data ||
+        setweight(to_tsvector('ts_config', coalesce(u.alias,'')), 'B');
+      FOR d IN SELECT search_data FROM data_elements de, transformation_elements te WHERE  de.uuid = te.data_element_id::uuid LOOP
+        data = data ||
+          setweight(d.search_data, 'B');
+       
+      END LOOP;
+                
+    END LOOP;
+    
+    count := count + 1;
+  END LOOP;
+  UPDATE translation_definitions set search_data = data WHERE id = tid;
+  RETURN count;
+end
+$$;
+
+
+ALTER FUNCTION public.refresh_translations_ts_data(tid uuid) OWNER TO scdev;
+
+--
+-- TOC entry 308 (class 1255 OID 16737)
+-- Name: set_de_ts_data(); Type: FUNCTION; Schema: public; Owner: scdev
+--
+
+CREATE FUNCTION public.set_de_ts_data() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    d RECORD;
+    v RECORD;    
+    data TSVECTOR;
+    count INTEGER := 0;
+    keywords text;
+begin
+  data = ''::tsvector;
+  keywords =' ';
+  keywords = keywords || coalesce(cleanup_for_search(NEW.name),'');
+  keywords = keywords || concat(' ', coalesce(cleanup_for_search(NEW.description),''));
+      
+    data = data ||
+      setweight(to_tsvector('ts_config', coalesce(cleanup_for_search(NEW.name),'')), 'B')||
+      setweight(to_tsvector('ts_config', coalesce(cleanup_for_search(NEW.description),'')), 'C');
+      
+    FOR v IN SELECT ev.value, ev.description as value_description, ev.name value_name  FROM data_element_values ev WHERE ev.data_element_id = NEW.uuid LOOP
+      data = data ||
+        setweight(to_tsvector('ts_config', coalesce(v.value_description,'')), 'B') ||
+        setweight(to_tsvector('ts_config', coalesce(v.value,'')), 'A') ||
+        setweight(to_tsvector('ts_config', coalesce(v.value_name,'')), 'A');
+        
+       keywords = keywords || concat(' ', coalesce(cleanup_for_search(v.value_description),' ')); 
+       keywords = keywords || concat(' ', coalesce(cleanup_for_search(v.value_name),' ')); 
+       keywords = keywords || concat(' ', coalesce(cleanup_for_search(v.value),' '));
+                    
+                        
+    END LOOP;
+    count := count + 1;
+  NEW.search_data := data;
+  keywords = plainto_tsquery('simple', keywords);
+  NEW.keywords := cleanup_for_search(keywords);
+  RETURN NEW;
+end
+$$;
+
+
+ALTER FUNCTION public.set_de_ts_data() OWNER TO scdev;
+
+--
+-- TOC entry 309 (class 1255 OID 16736)
+-- Name: set_external_de_ts_data(); Type: FUNCTION; Schema: public; Owner: scdev
+--
+
+CREATE FUNCTION public.set_external_de_ts_data() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    d RECORD;
+    v RECORD;    
+    data TSVECTOR;
+    count INTEGER := 0;
+begin
+  data = ''::tsvector;
+  
+    data = data ||
+      --setweight(to_tsvector('ts_config', coalesce(NEW.short_name,'')), 'B') ||
+      setweight(to_tsvector('ts_config', coalesce(NEW.description,'')), 'A') ||
+      setweight(to_tsvector('ts_config', coalesce(NEW.preferred_question_text,'')), 'A') ||
+      setweight(to_tsvector('ts_config', coalesce(NEW.external_id,'')), 'C');
+      --setweight(to_tsvector('ts_config', coalesce(NEW.definition,'')), 'D');
+      
+    FOR v IN SELECT ev.description as value_description, ev.name value_name, ev.code value_code  FROM external_def_values ev WHERE ev.source = NEW.external_source and ev.de_external_def_id = NEW.external_id LOOP
+      data = data ||
+       -- setweight(to_tsvector('ts_config', coalesce(v.value_description,'')), 'A') ||
+       setweight(to_tsvector('ts_config', coalesce(v.value_code,'')), 'B') ||
+        setweight(to_tsvector('ts_config', coalesce(v.value_name,'')), 'B');
+    END LOOP;
+
+    FOR v IN SELECT ev.question_text as q_text FROM alternative_question_texts ev WHERE ev.de_external_def_id = NEW.id LOOP
+      data = data ||
+       setweight(to_tsvector('ts_config', coalesce(v.q_text,'')), 'A');
+        
+    END LOOP;
+    
+    --FOR v IN SELECT t.name from external_element_tags t, de_external_defs_external_element_tags jt WHERE jt.external_element_tag_id = t.id AND jt.de_external_def_id = NEW.id LOOP
+    --  data = data ||
+    --    setweight(to_tsvector('ts_config', coalesce(v.name,'')), 'C');
+    --END LOOP;
+    count := count + 1;
+  NEW.search_data := data;
+  RETURN NEW;
+end
+$$;
+
+
+ALTER FUNCTION public.set_external_de_ts_data() OWNER TO scdev;
+
+--
+-- TOC entry 1891 (class 3602 OID 41344)
+-- Name: ts_config; Type: TEXT SEARCH CONFIGURATION; Schema: public; Owner: scdev
+--
+
+CREATE TEXT SEARCH CONFIGURATION public.ts_config (
+    PARSER = pg_catalog."default" );
+
+ALTER TEXT SEARCH CONFIGURATION public.ts_config
+    ADD MAPPING FOR asciiword WITH english_stem;
+
+ALTER TEXT SEARCH CONFIGURATION public.ts_config
+    ADD MAPPING FOR word WITH english_stem;
+
+ALTER TEXT SEARCH CONFIGURATION public.ts_config
+    ADD MAPPING FOR numword WITH simple;
+
+ALTER TEXT SEARCH CONFIGURATION public.ts_config
+    ADD MAPPING FOR email WITH simple;
+
+ALTER TEXT SEARCH CONFIGURATION public.ts_config
+    ADD MAPPING FOR url WITH simple;
+
+ALTER TEXT SEARCH CONFIGURATION public.ts_config
+    ADD MAPPING FOR host WITH simple;
+
+ALTER TEXT SEARCH CONFIGURATION public.ts_config
+    ADD MAPPING FOR sfloat WITH simple;
+
+ALTER TEXT SEARCH CONFIGURATION public.ts_config
+    ADD MAPPING FOR version WITH simple;
+
+ALTER TEXT SEARCH CONFIGURATION public.ts_config
+    ADD MAPPING FOR hword_numpart WITH simple;
+
+ALTER TEXT SEARCH CONFIGURATION public.ts_config
+    ADD MAPPING FOR hword_part WITH english_stem;
+
+ALTER TEXT SEARCH CONFIGURATION public.ts_config
+    ADD MAPPING FOR hword_asciipart WITH english_stem;
+
+ALTER TEXT SEARCH CONFIGURATION public.ts_config
+    ADD MAPPING FOR numhword WITH simple;
+
+ALTER TEXT SEARCH CONFIGURATION public.ts_config
+    ADD MAPPING FOR asciihword WITH english_stem;
+
+ALTER TEXT SEARCH CONFIGURATION public.ts_config
+    ADD MAPPING FOR hword WITH english_stem;
+
+ALTER TEXT SEARCH CONFIGURATION public.ts_config
+    ADD MAPPING FOR url_path WITH simple;
+
+ALTER TEXT SEARCH CONFIGURATION public.ts_config
+    ADD MAPPING FOR file WITH simple;
+
+ALTER TEXT SEARCH CONFIGURATION public.ts_config
+    ADD MAPPING FOR "float" WITH simple;
+
+ALTER TEXT SEARCH CONFIGURATION public.ts_config
+    ADD MAPPING FOR "int" WITH simple;
+
+ALTER TEXT SEARCH CONFIGURATION public.ts_config
+    ADD MAPPING FOR uint WITH simple;
+
+
+ALTER TEXT SEARCH CONFIGURATION public.ts_config OWNER TO scdev;
+
+SET default_tablespace = '';
+
+SET default_with_oids = false;
+
+--
+-- TOC entry 205 (class 1259 OID 16626)
+-- Name: admins; Type: TABLE; Schema: public; Owner: scdev
+--
+
+CREATE TABLE public.admins (
+    id integer NOT NULL,
+    email character varying DEFAULT ''::character varying NOT NULL,
+    encrypted_password character varying DEFAULT ''::character varying NOT NULL,
+    reset_password_token character varying,
+    reset_password_sent_at timestamp without time zone,
+    remember_created_at timestamp without time zone,
+    sign_in_count integer DEFAULT 0 NOT NULL,
+    current_sign_in_at timestamp without time zone,
+    last_sign_in_at timestamp without time zone,
+    current_sign_in_ip inet,
+    last_sign_in_ip inet,
+    created_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL
+);
+
+
+ALTER TABLE public.admins OWNER TO scdev;
+
+--
+-- TOC entry 204 (class 1259 OID 16624)
+-- Name: admins_id_seq; Type: SEQUENCE; Schema: public; Owner: scdev
+--
+
+CREATE SEQUENCE public.admins_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE public.admins_id_seq OWNER TO scdev;
+
+--
+-- TOC entry 2596 (class 0 OID 0)
+-- Dependencies: 204
+-- Name: admins_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: scdev
+--
+
+ALTER SEQUENCE public.admins_id_seq OWNED BY public.admins.id;
+
+
+--
+-- TOC entry 225 (class 1259 OID 67182)
+-- Name: alt_names; Type: TABLE; Schema: public; Owner: scdev
+--
+
+CREATE TABLE public.alt_names (
+    id bigint NOT NULL,
+    name character varying,
+    type character varying
+);
+
+
+ALTER TABLE public.alt_names OWNER TO scdev;
+
+--
+-- TOC entry 226 (class 1259 OID 67191)
+-- Name: alt_names_de_external_defs; Type: TABLE; Schema: public; Owner: scdev
+--
+
+CREATE TABLE public.alt_names_de_external_defs (
+    de_external_def_id bigint NOT NULL,
+    alt_name_id bigint NOT NULL
+);
+
+
+ALTER TABLE public.alt_names_de_external_defs OWNER TO scdev;
+
+--
+-- TOC entry 224 (class 1259 OID 67180)
+-- Name: alt_names_id_seq; Type: SEQUENCE; Schema: public; Owner: scdev
+--
+
+CREATE SEQUENCE public.alt_names_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE public.alt_names_id_seq OWNER TO scdev;
+
+--
+-- TOC entry 2597 (class 0 OID 0)
+-- Dependencies: 224
+-- Name: alt_names_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: scdev
+--
+
+ALTER SEQUENCE public.alt_names_id_seq OWNED BY public.alt_names.id;
+
+
+--
+-- TOC entry 228 (class 1259 OID 67198)
+-- Name: alternative_question_texts; Type: TABLE; Schema: public; Owner: scdev
+--
+
+CREATE TABLE public.alternative_question_texts (
+    id bigint NOT NULL,
+    question_text character varying,
+    de_external_def_id bigint
+);
+
+
+ALTER TABLE public.alternative_question_texts OWNER TO scdev;
+
+--
+-- TOC entry 227 (class 1259 OID 67196)
+-- Name: alternative_question_texts_id_seq; Type: SEQUENCE; Schema: public; Owner: scdev
+--
+
+CREATE SEQUENCE public.alternative_question_texts_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE public.alternative_question_texts_id_seq OWNER TO scdev;
+
+--
+-- TOC entry 2598 (class 0 OID 0)
+-- Dependencies: 227
+-- Name: alternative_question_texts_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: scdev
+--
+
+ALTER SEQUENCE public.alternative_question_texts_id_seq OWNED BY public.alternative_question_texts.id;
+
+
+--
+-- TOC entry 185 (class 1259 OID 16426)
+-- Name: ar_internal_metadata; Type: TABLE; Schema: public; Owner: scdev
+--
+
+CREATE TABLE public.ar_internal_metadata (
+    key character varying NOT NULL,
+    value character varying,
+    created_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL
+);
+
+
+ALTER TABLE public.ar_internal_metadata OWNER TO scdev;
+
+--
+-- TOC entry 194 (class 1259 OID 16510)
+-- Name: carts; Type: TABLE; Schema: public; Owner: scdev
+--
+
+CREATE TABLE public.carts (
+    id integer NOT NULL,
+    user_id integer,
+    created_at timestamp without time zone,
+    updated_at timestamp without time zone
+);
+
+
+ALTER TABLE public.carts OWNER TO scdev;
+
+--
+-- TOC entry 193 (class 1259 OID 16508)
+-- Name: carts_id_seq; Type: SEQUENCE; Schema: public; Owner: scdev
+--
+
+CREATE SEQUENCE public.carts_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE public.carts_id_seq OWNER TO scdev;
+
+--
+-- TOC entry 2599 (class 0 OID 0)
+-- Dependencies: 193
+-- Name: carts_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: scdev
+--
+
+ALTER SEQUENCE public.carts_id_seq OWNED BY public.carts.id;
+
+
+--
+-- TOC entry 239 (class 1259 OID 77420)
+-- Name: cde_loaders; Type: TABLE; Schema: public; Owner: scdev
+--
+
+CREATE TABLE public.cde_loaders (
+    id bigint NOT NULL,
+    name text,
+    description text,
+    file text,
+    type text,
+    source text,
+    collection_id bigint,
+    user_id bigint,
+    created_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL,
+    file_url text
+);
+
+
+ALTER TABLE public.cde_loaders OWNER TO scdev;
+
+--
+-- TOC entry 238 (class 1259 OID 77418)
+-- Name: cde_loaders_id_seq; Type: SEQUENCE; Schema: public; Owner: scdev
+--
+
+CREATE SEQUENCE public.cde_loaders_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE public.cde_loaders_id_seq OWNER TO scdev;
+
+--
+-- TOC entry 2600 (class 0 OID 0)
+-- Dependencies: 238
+-- Name: cde_loaders_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: scdev
+--
+
+ALTER SEQUENCE public.cde_loaders_id_seq OWNED BY public.cde_loaders.id;
+
+
+--
+-- TOC entry 230 (class 1259 OID 68171)
+-- Name: collections; Type: TABLE; Schema: public; Owner: scdev
+--
+
+CREATE TABLE public.collections (
+    id bigint NOT NULL,
+    label text,
+    created_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL
+);
+
+
+ALTER TABLE public.collections OWNER TO scdev;
+
+--
+-- TOC entry 229 (class 1259 OID 68169)
+-- Name: collections_id_seq; Type: SEQUENCE; Schema: public; Owner: scdev
+--
+
+CREATE SEQUENCE public.collections_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE public.collections_id_seq OWNER TO scdev;
+
+--
+-- TOC entry 2601 (class 0 OID 0)
+-- Dependencies: 229
+-- Name: collections_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: scdev
+--
+
+ALTER SEQUENCE public.collections_id_seq OWNED BY public.collections.id;
+
+
+--
+-- TOC entry 211 (class 1259 OID 16678)
+-- Name: data_element_values; Type: TABLE; Schema: public; Owner: scdev
+--
+
+CREATE TABLE public.data_element_values (
+    id integer NOT NULL,
+    value character varying,
+    name character varying,
+    description text,
+    created_at timestamp without time zone,
+    updated_at timestamp without time zone,
+    data_element_id uuid
+);
+
+
+ALTER TABLE public.data_element_values OWNER TO scdev;
+
+--
+-- TOC entry 210 (class 1259 OID 16676)
+-- Name: data_element_values_id_seq; Type: SEQUENCE; Schema: public; Owner: scdev
+--
+
+CREATE SEQUENCE public.data_element_values_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE public.data_element_values_id_seq OWNER TO scdev;
+
+--
+-- TOC entry 2602 (class 0 OID 0)
+-- Dependencies: 210
+-- Name: data_element_values_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: scdev
+--
+
+ALTER SEQUENCE public.data_element_values_id_seq OWNED BY public.data_element_values.id;
+
+
+--
+-- TOC entry 188 (class 1259 OID 16476)
+-- Name: data_elements; Type: TABLE; Schema: public; Owner: scdev
+--
+
+CREATE TABLE public.data_elements (
+    uuid uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    name character varying,
+    de_type character varying,
+    de_table character varying,
+    de_column character varying,
+    created_at timestamp without time zone,
+    updated_at timestamp without time zone,
+    meta_data text,
+    search_data tsvector,
+    description text,
+    source_data_set_id uuid,
+    keywords text,
+    "order" integer,
+    cdeid character varying,
+    user_keywords character varying,
+    not_mappable boolean
+);
+
+
+ALTER TABLE public.data_elements OWNER TO scdev;
+
+--
+-- TOC entry 190 (class 1259 OID 16487)
+-- Name: de_external_defs; Type: TABLE; Schema: public; Owner: scdev
+--
+
+CREATE TABLE public.de_external_defs (
+    id integer NOT NULL,
+    uuid uuid,
+    external_source character varying,
+    description text,
+    created_at timestamp without time zone,
+    updated_at timestamp without time zone,
+    external_id character varying,
+    version character varying,
+    data_type character varying,
+    value_domain_type character varying,
+    short_name character varying,
+    search_data tsvector,
+    instructions text,
+    definition text,
+    preferred_question_text text
+);
+
+
+ALTER TABLE public.de_external_defs OWNER TO scdev;
+
+--
+-- TOC entry 221 (class 1259 OID 41357)
+-- Name: de_external_defs_external_element_tags; Type: TABLE; Schema: public; Owner: scdev
+--
+
+CREATE TABLE public.de_external_defs_external_element_tags (
+    external_element_tag_id bigint NOT NULL,
+    de_external_def_id bigint NOT NULL
+);
+
+
+ALTER TABLE public.de_external_defs_external_element_tags OWNER TO scdev;
+
+--
+-- TOC entry 189 (class 1259 OID 16485)
+-- Name: de_external_defs_id_seq; Type: SEQUENCE; Schema: public; Owner: scdev
+--
+
+CREATE SEQUENCE public.de_external_defs_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE public.de_external_defs_id_seq OWNER TO scdev;
+
+--
+-- TOC entry 2603 (class 0 OID 0)
+-- Dependencies: 189
+-- Name: de_external_defs_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: scdev
+--
+
+ALTER SEQUENCE public.de_external_defs_id_seq OWNED BY public.de_external_defs.id;
+
+
+--
+-- TOC entry 237 (class 1259 OID 77335)
+-- Name: de_external_defs_sst_data_elements; Type: TABLE; Schema: public; Owner: scdev
+--
+
+CREATE TABLE public.de_external_defs_sst_data_elements (
+    de_external_def_id bigint NOT NULL,
+    sst_data_element_id bigint NOT NULL
+);
+
+
+ALTER TABLE public.de_external_defs_sst_data_elements OWNER TO scdev;
+
+--
+-- TOC entry 187 (class 1259 OID 16436)
+-- Name: de_types; Type: TABLE; Schema: public; Owner: scdev
+--
+
+CREATE TABLE public.de_types (
+    id character varying NOT NULL,
+    name character varying,
+    created_at timestamp without time zone,
+    updated_at timestamp without time zone,
+    db_type character varying
+);
+
+
+ALTER TABLE public.de_types OWNER TO scdev;
+
+--
+-- TOC entry 186 (class 1259 OID 16434)
+-- Name: de_types_id_seq; Type: SEQUENCE; Schema: public; Owner: scdev
+--
+
+CREATE SEQUENCE public.de_types_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE public.de_types_id_seq OWNER TO scdev;
+
+--
+-- TOC entry 2604 (class 0 OID 0)
+-- Dependencies: 186
+-- Name: de_types_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: scdev
+--
+
+ALTER SEQUENCE public.de_types_id_seq OWNED BY public.de_types.id;
+
+
+--
+-- TOC entry 232 (class 1259 OID 68226)
+-- Name: external_def_collections; Type: TABLE; Schema: public; Owner: scdev
+--
+
+CREATE TABLE public.external_def_collections (
+    id bigint NOT NULL,
+    de_external_def_id bigint,
+    collection_id bigint,
+    created_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL
+);
+
+
+ALTER TABLE public.external_def_collections OWNER TO scdev;
+
+--
+-- TOC entry 231 (class 1259 OID 68224)
+-- Name: external_def_collections_id_seq; Type: SEQUENCE; Schema: public; Owner: scdev
+--
+
+CREATE SEQUENCE public.external_def_collections_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE public.external_def_collections_id_seq OWNER TO scdev;
+
+--
+-- TOC entry 2605 (class 0 OID 0)
+-- Dependencies: 231
+-- Name: external_def_collections_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: scdev
+--
+
+ALTER SEQUENCE public.external_def_collections_id_seq OWNED BY public.external_def_collections.id;
+
+
+--
+-- TOC entry 215 (class 1259 OID 16728)
+-- Name: external_def_trigger_functions; Type: TABLE; Schema: public; Owner: scdev
+--
+
+CREATE TABLE public.external_def_trigger_functions (
+    id integer NOT NULL
+);
+
+
+ALTER TABLE public.external_def_trigger_functions OWNER TO scdev;
+
+--
+-- TOC entry 214 (class 1259 OID 16726)
+-- Name: external_def_trigger_functions_id_seq; Type: SEQUENCE; Schema: public; Owner: scdev
+--
+
+CREATE SEQUENCE public.external_def_trigger_functions_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE public.external_def_trigger_functions_id_seq OWNER TO scdev;
+
+--
+-- TOC entry 2606 (class 0 OID 0)
+-- Dependencies: 214
+-- Name: external_def_trigger_functions_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: scdev
+--
+
+ALTER SEQUENCE public.external_def_trigger_functions_id_seq OWNED BY public.external_def_trigger_functions.id;
+
+
+--
+-- TOC entry 203 (class 1259 OID 16614)
+-- Name: external_def_values; Type: TABLE; Schema: public; Owner: scdev
+--
+
+CREATE TABLE public.external_def_values (
+    id integer NOT NULL,
+    code character varying,
+    name text,
+    description text,
+    version character varying,
+    external_id character varying,
+    de_external_def_id character varying,
+    created_at timestamp without time zone,
+    updated_at timestamp without time zone,
+    source character varying,
+    meaning_concept text
+);
+
+
+ALTER TABLE public.external_def_values OWNER TO scdev;
+
+--
+-- TOC entry 202 (class 1259 OID 16612)
+-- Name: external_def_values_id_seq; Type: SEQUENCE; Schema: public; Owner: scdev
+--
+
+CREATE SEQUENCE public.external_def_values_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE public.external_def_values_id_seq OWNER TO scdev;
+
+--
+-- TOC entry 2607 (class 0 OID 0)
+-- Dependencies: 202
+-- Name: external_def_values_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: scdev
+--
+
+ALTER SEQUENCE public.external_def_values_id_seq OWNED BY public.external_def_values.id;
+
+
+--
+-- TOC entry 220 (class 1259 OID 41348)
+-- Name: external_element_tags; Type: TABLE; Schema: public; Owner: scdev
+--
+
+CREATE TABLE public.external_element_tags (
+    id bigint NOT NULL,
+    name character varying,
+    parent_id integer
+);
+
+
+ALTER TABLE public.external_element_tags OWNER TO scdev;
+
+--
+-- TOC entry 219 (class 1259 OID 41346)
+-- Name: external_element_tags_id_seq; Type: SEQUENCE; Schema: public; Owner: scdev
+--
+
+CREATE SEQUENCE public.external_element_tags_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE public.external_element_tags_id_seq OWNER TO scdev;
+
+--
+-- TOC entry 2608 (class 0 OID 0)
+-- Dependencies: 219
+-- Name: external_element_tags_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: scdev
+--
+
+ALTER SEQUENCE public.external_element_tags_id_seq OWNED BY public.external_element_tags.id;
+
+
+--
+-- TOC entry 196 (class 1259 OID 16521)
+-- Name: line_items; Type: TABLE; Schema: public; Owner: scdev
+--
+
+CREATE TABLE public.line_items (
+    id integer NOT NULL,
+    data_element_id uuid,
+    cart_id integer,
+    created_at timestamp without time zone,
+    updated_at timestamp without time zone
+);
+
+
+ALTER TABLE public.line_items OWNER TO scdev;
+
+--
+-- TOC entry 195 (class 1259 OID 16519)
+-- Name: line_items_id_seq; Type: SEQUENCE; Schema: public; Owner: scdev
+--
+
+CREATE SEQUENCE public.line_items_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE public.line_items_id_seq OWNER TO scdev;
+
+--
+-- TOC entry 2609 (class 0 OID 0)
+-- Dependencies: 195
+-- Name: line_items_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: scdev
+--
+
+ALTER SEQUENCE public.line_items_id_seq OWNED BY public.line_items.id;
+
+
+--
+-- TOC entry 218 (class 1259 OID 33156)
+-- Name: pg_search_documents; Type: TABLE; Schema: public; Owner: scdev
+--
+
+CREATE TABLE public.pg_search_documents (
+    id bigint NOT NULL,
+    content text,
+    searchable_type character varying,
+    created_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL,
+    searchable_id uuid
+);
+
+
+ALTER TABLE public.pg_search_documents OWNER TO scdev;
+
+--
+-- TOC entry 217 (class 1259 OID 33154)
+-- Name: pg_search_documents_id_seq; Type: SEQUENCE; Schema: public; Owner: scdev
+--
+
+CREATE SEQUENCE public.pg_search_documents_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE public.pg_search_documents_id_seq OWNER TO scdev;
+
+--
+-- TOC entry 2610 (class 0 OID 0)
+-- Dependencies: 217
+-- Name: pg_search_documents_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: scdev
+--
+
+ALTER SEQUENCE public.pg_search_documents_id_seq OWNED BY public.pg_search_documents.id;
+
+
+--
+-- TOC entry 209 (class 1259 OID 16667)
+-- Name: raw_data_sets; Type: TABLE; Schema: public; Owner: scdev
+--
+
+CREATE TABLE public.raw_data_sets (
+    id integer NOT NULL,
+    uuid uuid,
+    name character varying,
+    description text,
+    source character varying,
+    created_at timestamp without time zone,
+    updated_at timestamp without time zone,
+    raw_file_name character varying,
+    raw_content_type character varying,
+    raw_file_size integer,
+    raw_updated_at timestamp without time zone,
+    dictionary_file_name character varying,
+    dictionary_content_type character varying,
+    dictionary_file_size integer,
+    dictionary_updated_at timestamp without time zone
+);
+
+
+ALTER TABLE public.raw_data_sets OWNER TO scdev;
+
+--
+-- TOC entry 208 (class 1259 OID 16665)
+-- Name: raw_data_sets_id_seq; Type: SEQUENCE; Schema: public; Owner: scdev
+--
+
+CREATE SEQUENCE public.raw_data_sets_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE public.raw_data_sets_id_seq OWNER TO scdev;
+
+--
+-- TOC entry 2611 (class 0 OID 0)
+-- Dependencies: 208
+-- Name: raw_data_sets_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: scdev
+--
+
+ALTER SEQUENCE public.raw_data_sets_id_seq OWNED BY public.raw_data_sets.id;
+
+
+--
+-- TOC entry 184 (class 1259 OID 16418)
+-- Name: schema_migrations; Type: TABLE; Schema: public; Owner: scdev
+--
+
+CREATE TABLE public.schema_migrations (
+    version character varying NOT NULL
+);
+
+
+ALTER TABLE public.schema_migrations OWNER TO scdev;
+
+--
+-- TOC entry 216 (class 1259 OID 16742)
+-- Name: source_data_sets; Type: TABLE; Schema: public; Owner: scdev
+--
+
+CREATE TABLE public.source_data_sets (
+    id uuid NOT NULL,
+    provider character varying,
+    description text,
+    file_name character varying,
+    file_size integer,
+    dictionary_file_name character varying,
+    dictionary_file_size integer,
+    status character varying,
+    created_at timestamp without time zone,
+    updated_at timestamp without time zone,
+    url character varying,
+    dd_url character varying,
+    source character varying,
+    source_id integer,
+    table_name character varying,
+    search_data tsvector,
+    user_email character varying,
+    user_id integer
+);
+
+
+ALTER TABLE public.source_data_sets OWNER TO scdev;
+
+--
+-- TOC entry 240 (class 1259 OID 77462)
+-- Name: source_data_sets_translation_definitions; Type: TABLE; Schema: public; Owner: scdev
+--
+
+CREATE TABLE public.source_data_sets_translation_definitions (
+    source_data_set_id bigint NOT NULL,
+    translation_definition_id bigint NOT NULL
+);
+
+
+ALTER TABLE public.source_data_sets_translation_definitions OWNER TO scdev;
+
+--
+-- TOC entry 192 (class 1259 OID 16499)
+-- Name: sources; Type: TABLE; Schema: public; Owner: scdev
+--
+
+CREATE TABLE public.sources (
+    id integer NOT NULL,
+    name character varying,
+    description text,
+    created_at timestamp without time zone,
+    updated_at timestamp without time zone,
+    table_name character varying
+);
+
+
+ALTER TABLE public.sources OWNER TO scdev;
+
+--
+-- TOC entry 191 (class 1259 OID 16497)
+-- Name: sources_id_seq; Type: SEQUENCE; Schema: public; Owner: scdev
+--
+
+CREATE SEQUENCE public.sources_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE public.sources_id_seq OWNER TO scdev;
+
+--
+-- TOC entry 2612 (class 0 OID 0)
+-- Dependencies: 191
+-- Name: sources_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: scdev
+--
+
+ALTER SEQUENCE public.sources_id_seq OWNED BY public.sources.id;
+
+
+--
+-- TOC entry 234 (class 1259 OID 77263)
+-- Name: sst_builders; Type: TABLE; Schema: public; Owner: scdev
+--
+
+CREATE TABLE public.sst_builders (
+    id bigint NOT NULL,
+    name text,
+    description text,
+    output_file text,
+    created_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL,
+    user_id bigint,
+    translation_type character varying,
+    source_id uuid
+);
+
+
+ALTER TABLE public.sst_builders OWNER TO scdev;
+
+--
+-- TOC entry 233 (class 1259 OID 77261)
+-- Name: sst_builders_id_seq; Type: SEQUENCE; Schema: public; Owner: scdev
+--
+
+CREATE SEQUENCE public.sst_builders_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE public.sst_builders_id_seq OWNER TO scdev;
+
+--
+-- TOC entry 2613 (class 0 OID 0)
+-- Dependencies: 233
+-- Name: sst_builders_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: scdev
+--
+
+ALTER SEQUENCE public.sst_builders_id_seq OWNED BY public.sst_builders.id;
+
+
+--
+-- TOC entry 236 (class 1259 OID 77296)
+-- Name: sst_data_elements; Type: TABLE; Schema: public; Owner: scdev
+--
+
+CREATE TABLE public.sst_data_elements (
+    id bigint NOT NULL,
+    column_name text,
+    build_order integer,
+    sst_builder_id bigint,
+    created_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL,
+    data_element_id uuid
+);
+
+
+ALTER TABLE public.sst_data_elements OWNER TO scdev;
+
+--
+-- TOC entry 235 (class 1259 OID 77294)
+-- Name: sst_data_elements_id_seq; Type: SEQUENCE; Schema: public; Owner: scdev
+--
+
+CREATE SEQUENCE public.sst_data_elements_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE public.sst_data_elements_id_seq OWNER TO scdev;
+
+--
+-- TOC entry 2614 (class 0 OID 0)
+-- Dependencies: 235
+-- Name: sst_data_elements_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: scdev
+--
+
+ALTER SEQUENCE public.sst_data_elements_id_seq OWNED BY public.sst_data_elements.id;
+
+
+--
+-- TOC entry 223 (class 1259 OID 41362)
+-- Name: tags_trees; Type: TABLE; Schema: public; Owner: scdev
+--
+
+CREATE TABLE public.tags_trees (
+    id bigint NOT NULL,
+    parent_id integer,
+    child_id integer
+);
+
+
+ALTER TABLE public.tags_trees OWNER TO scdev;
+
+--
+-- TOC entry 222 (class 1259 OID 41360)
+-- Name: tags_trees_id_seq; Type: SEQUENCE; Schema: public; Owner: scdev
+--
+
+CREATE SEQUENCE public.tags_trees_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE public.tags_trees_id_seq OWNER TO scdev;
+
+--
+-- TOC entry 2615 (class 0 OID 0)
+-- Dependencies: 222
+-- Name: tags_trees_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: scdev
+--
+
+ALTER SEQUENCE public.tags_trees_id_seq OWNED BY public.tags_trees.id;
+
+
+--
+-- TOC entry 201 (class 1259 OID 16565)
+-- Name: transformation_elements; Type: TABLE; Schema: public; Owner: scdev
+--
+
+CREATE TABLE public.transformation_elements (
+    id integer NOT NULL,
+    transformation_unit_id integer,
+    data_element_id character varying,
+    "order" integer,
+    created_at timestamp without time zone,
+    updated_at timestamp without time zone
+);
+
+
+ALTER TABLE public.transformation_elements OWNER TO scdev;
+
+--
+-- TOC entry 200 (class 1259 OID 16563)
+-- Name: transformation_elements_id_seq; Type: SEQUENCE; Schema: public; Owner: scdev
+--
+
+CREATE SEQUENCE public.transformation_elements_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE public.transformation_elements_id_seq OWNER TO scdev;
+
+--
+-- TOC entry 2616 (class 0 OID 0)
+-- Dependencies: 200
+-- Name: transformation_elements_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: scdev
+--
+
+ALTER SEQUENCE public.transformation_elements_id_seq OWNED BY public.transformation_elements.id;
+
+
+--
+-- TOC entry 199 (class 1259 OID 16553)
+-- Name: transformation_units; Type: TABLE; Schema: public; Owner: scdev
+--
+
+CREATE TABLE public.transformation_units (
+    id integer NOT NULL,
+    transformation_definition_id integer,
+    operation character varying,
+    ord integer,
+    created_at timestamp without time zone,
+    updated_at timestamp without time zone,
+    translation_definition_id_legacy integer,
+    alias character varying,
+    data_type character varying,
+    alias_id character varying,
+    alias_source character varying,
+    translation_definition_id uuid
+);
+
+
+ALTER TABLE public.transformation_units OWNER TO scdev;
+
+--
+-- TOC entry 198 (class 1259 OID 16551)
+-- Name: transformation_units_id_seq; Type: SEQUENCE; Schema: public; Owner: scdev
+--
+
+CREATE SEQUENCE public.transformation_units_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE public.transformation_units_id_seq OWNER TO scdev;
+
+--
+-- TOC entry 2617 (class 0 OID 0)
+-- Dependencies: 198
+-- Name: transformation_units_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: scdev
+--
+
+ALTER SEQUENCE public.transformation_units_id_seq OWNED BY public.transformation_units.id;
+
+
+--
+-- TOC entry 197 (class 1259 OID 16542)
+-- Name: translation_definitions; Type: TABLE; Schema: public; Owner: scdev
+--
+
+CREATE TABLE public.translation_definitions (
+    created_at timestamp without time zone,
+    updated_at timestamp without time zone,
+    name character varying,
+    user_id character varying,
+    execution_status character varying,
+    execution_time timestamp without time zone,
+    records_retrieved integer,
+    destination character varying,
+    search_data tsvector,
+    id uuid NOT NULL,
+    file_name character varying,
+    translation_type character varying,
+    description character varying
+);
+
+
+ALTER TABLE public.translation_definitions OWNER TO scdev;
+
+--
+-- TOC entry 207 (class 1259 OID 16645)
+-- Name: users; Type: TABLE; Schema: public; Owner: scdev
+--
+
+CREATE TABLE public.users (
+    id integer NOT NULL,
+    email character varying DEFAULT ''::character varying NOT NULL,
+    encrypted_password character varying DEFAULT ''::character varying NOT NULL,
+    reset_password_token character varying,
+    reset_password_sent_at timestamp without time zone,
+    remember_created_at timestamp without time zone,
+    sign_in_count integer DEFAULT 0 NOT NULL,
+    current_sign_in_at timestamp without time zone,
+    last_sign_in_at timestamp without time zone,
+    current_sign_in_ip inet,
+    last_sign_in_ip inet,
+    first_name character varying DEFAULT ''::character varying NOT NULL,
+    last_name character varying DEFAULT ''::character varying NOT NULL
+);
+
+
+ALTER TABLE public.users OWNER TO scdev;
+
+--
+-- TOC entry 206 (class 1259 OID 16643)
+-- Name: users_id_seq; Type: SEQUENCE; Schema: public; Owner: scdev
+--
+
+CREATE SEQUENCE public.users_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE public.users_id_seq OWNER TO scdev;
+
+--
+-- TOC entry 2618 (class 0 OID 0)
+-- Dependencies: 206
+-- Name: users_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: scdev
+--
+
+ALTER SEQUENCE public.users_id_seq OWNED BY public.users.id;
+
+
+--
+-- TOC entry 213 (class 1259 OID 16689)
+-- Name: value_mappings; Type: TABLE; Schema: public; Owner: scdev
+--
+
+CREATE TABLE public.value_mappings (
+    id integer NOT NULL,
+    source character varying,
+    external_de_id character varying,
+    data_element_value_id integer,
+    created_at timestamp without time zone,
+    updated_at timestamp without time zone,
+    data_element_id uuid,
+    external_value_id character varying,
+    external_id character varying,
+    de_external_def_id character varying,
+    external_value character varying,
+    is_locked boolean
+);
+
+
+ALTER TABLE public.value_mappings OWNER TO scdev;
+
+--
+-- TOC entry 212 (class 1259 OID 16687)
+-- Name: value_mappings_id_seq; Type: SEQUENCE; Schema: public; Owner: scdev
+--
+
+CREATE SEQUENCE public.value_mappings_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE public.value_mappings_id_seq OWNER TO scdev;
+
+--
+-- TOC entry 2619 (class 0 OID 0)
+-- Dependencies: 212
+-- Name: value_mappings_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: scdev
+--
+
+ALTER SEQUENCE public.value_mappings_id_seq OWNED BY public.value_mappings.id;
+
+
+--
+-- TOC entry 2285 (class 2604 OID 16629)
+-- Name: id; Type: DEFAULT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.admins ALTER COLUMN id SET DEFAULT nextval('public.admins_id_seq'::regclass);
+
+
+--
+-- TOC entry 2302 (class 2604 OID 67185)
+-- Name: id; Type: DEFAULT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.alt_names ALTER COLUMN id SET DEFAULT nextval('public.alt_names_id_seq'::regclass);
+
+
+--
+-- TOC entry 2303 (class 2604 OID 67201)
+-- Name: id; Type: DEFAULT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.alternative_question_texts ALTER COLUMN id SET DEFAULT nextval('public.alternative_question_texts_id_seq'::regclass);
+
+
+--
+-- TOC entry 2280 (class 2604 OID 16513)
+-- Name: id; Type: DEFAULT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.carts ALTER COLUMN id SET DEFAULT nextval('public.carts_id_seq'::regclass);
+
+
+--
+-- TOC entry 2308 (class 2604 OID 77423)
+-- Name: id; Type: DEFAULT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.cde_loaders ALTER COLUMN id SET DEFAULT nextval('public.cde_loaders_id_seq'::regclass);
+
+
+--
+-- TOC entry 2304 (class 2604 OID 68174)
+-- Name: id; Type: DEFAULT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.collections ALTER COLUMN id SET DEFAULT nextval('public.collections_id_seq'::regclass);
+
+
+--
+-- TOC entry 2296 (class 2604 OID 16681)
+-- Name: id; Type: DEFAULT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.data_element_values ALTER COLUMN id SET DEFAULT nextval('public.data_element_values_id_seq'::regclass);
+
+
+--
+-- TOC entry 2278 (class 2604 OID 16490)
+-- Name: id; Type: DEFAULT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.de_external_defs ALTER COLUMN id SET DEFAULT nextval('public.de_external_defs_id_seq'::regclass);
+
+
+--
+-- TOC entry 2276 (class 2604 OID 16586)
+-- Name: id; Type: DEFAULT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.de_types ALTER COLUMN id SET DEFAULT nextval('public.de_types_id_seq'::regclass);
+
+
+--
+-- TOC entry 2305 (class 2604 OID 68229)
+-- Name: id; Type: DEFAULT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.external_def_collections ALTER COLUMN id SET DEFAULT nextval('public.external_def_collections_id_seq'::regclass);
+
+
+--
+-- TOC entry 2298 (class 2604 OID 16731)
+-- Name: id; Type: DEFAULT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.external_def_trigger_functions ALTER COLUMN id SET DEFAULT nextval('public.external_def_trigger_functions_id_seq'::regclass);
+
+
+--
+-- TOC entry 2284 (class 2604 OID 16617)
+-- Name: id; Type: DEFAULT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.external_def_values ALTER COLUMN id SET DEFAULT nextval('public.external_def_values_id_seq'::regclass);
+
+
+--
+-- TOC entry 2300 (class 2604 OID 41351)
+-- Name: id; Type: DEFAULT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.external_element_tags ALTER COLUMN id SET DEFAULT nextval('public.external_element_tags_id_seq'::regclass);
+
+
+--
+-- TOC entry 2281 (class 2604 OID 16524)
+-- Name: id; Type: DEFAULT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.line_items ALTER COLUMN id SET DEFAULT nextval('public.line_items_id_seq'::regclass);
+
+
+--
+-- TOC entry 2299 (class 2604 OID 33159)
+-- Name: id; Type: DEFAULT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.pg_search_documents ALTER COLUMN id SET DEFAULT nextval('public.pg_search_documents_id_seq'::regclass);
+
+
+--
+-- TOC entry 2295 (class 2604 OID 16670)
+-- Name: id; Type: DEFAULT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.raw_data_sets ALTER COLUMN id SET DEFAULT nextval('public.raw_data_sets_id_seq'::regclass);
+
+
+--
+-- TOC entry 2279 (class 2604 OID 16502)
+-- Name: id; Type: DEFAULT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.sources ALTER COLUMN id SET DEFAULT nextval('public.sources_id_seq'::regclass);
+
+
+--
+-- TOC entry 2306 (class 2604 OID 77266)
+-- Name: id; Type: DEFAULT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.sst_builders ALTER COLUMN id SET DEFAULT nextval('public.sst_builders_id_seq'::regclass);
+
+
+--
+-- TOC entry 2307 (class 2604 OID 77299)
+-- Name: id; Type: DEFAULT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.sst_data_elements ALTER COLUMN id SET DEFAULT nextval('public.sst_data_elements_id_seq'::regclass);
+
+
+--
+-- TOC entry 2301 (class 2604 OID 41365)
+-- Name: id; Type: DEFAULT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.tags_trees ALTER COLUMN id SET DEFAULT nextval('public.tags_trees_id_seq'::regclass);
+
+
+--
+-- TOC entry 2283 (class 2604 OID 16568)
+-- Name: id; Type: DEFAULT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.transformation_elements ALTER COLUMN id SET DEFAULT nextval('public.transformation_elements_id_seq'::regclass);
+
+
+--
+-- TOC entry 2282 (class 2604 OID 16556)
+-- Name: id; Type: DEFAULT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.transformation_units ALTER COLUMN id SET DEFAULT nextval('public.transformation_units_id_seq'::regclass);
+
+
+--
+-- TOC entry 2289 (class 2604 OID 16648)
+-- Name: id; Type: DEFAULT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.users ALTER COLUMN id SET DEFAULT nextval('public.users_id_seq'::regclass);
+
+
+--
+-- TOC entry 2297 (class 2604 OID 16692)
+-- Name: id; Type: DEFAULT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.value_mappings ALTER COLUMN id SET DEFAULT nextval('public.value_mappings_id_seq'::regclass);
+
+
+--
+-- TOC entry 2548 (class 0 OID 16626)
+-- Dependencies: 205
+-- Data for Name: admins; Type: TABLE DATA; Schema: public; Owner: scdev
+--
+
+COPY public.admins (id, email, encrypted_password, reset_password_token, reset_password_sent_at, remember_created_at, sign_in_count, current_sign_in_at, last_sign_in_at, current_sign_in_ip, last_sign_in_ip, created_at, updated_at) FROM stdin;
+\.
+
+
+--
+-- TOC entry 2620 (class 0 OID 0)
+-- Dependencies: 204
+-- Name: admins_id_seq; Type: SEQUENCE SET; Schema: public; Owner: scdev
+--
+
+SELECT pg_catalog.setval('public.admins_id_seq', 1, false);
+
+
+--
+-- TOC entry 2568 (class 0 OID 67182)
+-- Dependencies: 225
+-- Data for Name: alt_names; Type: TABLE DATA; Schema: public; Owner: scdev
+--
+
+COPY public.alt_names (id, name, type) FROM stdin;
+4154	laboratory_prcoedure_platelet_result_lower_limit_of_normal_value	TCGA_XML_Name
+4155	alcohol_history_documented	TCGA_XML_Name
+4156	ethnicity	TCGA_XML_Name
+4157	prior_dx	TCGA_XML_Name
+4158	Days To Last Followup	GDC_Name
+4159	CIG_SMK_YR_NUM	USED_BY
+4160	death_subtract_diagnosis_time_duration	HCMI Name
+4161	prothrombin_time_normal_range_upper	GDC_Name
+4162	alpha_fetoprotein_outcome_lower_value	HCMI Name
+4163	USC/NCCC	USED_BY
+4164	percent_inflam_infiltration	GDC_Name
+4165	neoplasm_histologic_grade	HCMI Name
+4166	platelets_normal_range_upper	GDC_Name
+4167	cog_neuroblastoma_risk_group	GDC_Name
+4168	INCP_mitosis_karyorrhexis_index	HCMI Name
+4169	tumor_tissue_site	TCGA_XML_Name
+4170	treatment_type	GDC_Name
+4171	therapy_intent	HCMI Name
+4172	normal_tissue_proximity	TCGA_XML_Name
+4173	day_of_last_followup	HCMI Name
+4174	weight	TCGA_XML_Name
+4175	post_bronchodilator_fev1_fvc_percent	TCGA_XML_Name
+4176	ECOG_PERFSTAT_SCALE	USED_BY
+4177	neoplasm_histologic_type_name	HCMI Name
+4178	dci_karn_lan_score	NMDP_FN
+4179	pre_bronchodilator_fev1_fvc_percent	TCGA_XML_Name
+4180	cigarettes_per_day	GDC_Name
+4181	fev1_ref_post_bronch_percent	GDC_Name
+4182	laboratory_procedure_creatinine_result_upper_limit_of_normal_value	TCGA_XML_Name
+4183	PERF_ASS_ECOG_SCALE	C3D Name
+4184	PT_WT_MSRMT	USED_BY
+4185	ECOGPrfmScrTp	COG GDE Short Name
+4186	KARN_PERF_STAT_SC	USED_BY
+4187	PT_MENOPAUSE_STAT	USED_BY
+4188	laboratory_procedure_alpha_fetoprotein_outcome_value	TCGA_XML_Name
+4189	laboratory_procedure_total_bilirubin_result_specified_lower_limit_of_normal_value	TCGA_XML_Name
+4190	years_smoked	GDC_Name
+4191	PRM_TUMOR_LATERAL_TP	C3D Name
+4192	bilirubin_normal_range_upper	GDC_Name
+4193	benign_esophageal_columnar_dysplasia_degree	GDC_Name
+4194	laboratory_procedure_international_normalization_ratio_result_upper_limit_of_normal_value	TCGA_XML_Name
+4195	laboratory_procedure_alpha_fetoprotein_outcome_upper_limit_of_normal_value	TCGA_XML_Name
+4196	histological_type	TCGA_XML_Name
+4197	supratentorial_localization	GDC_Name
+4198	tumor_marker_CA-19-9_test_value	HCMI Name
+4199	month_of_last_followup	TCGA_XML_Name
+4200	tumor_confined_to_organ_of_origin	GDC_Name
+4201	pancreatitis_onset_year	GDC_Name
+4202	days_from_date_of_initial_pathologic_diagnosis_to_date_of_birth	TCGA_XML_Name
+4203	LAB_ALB_RS_ULN_VAL	USED_BY
+4204	tobacco_smoking_status	GDC_Name
+4205	barretts_esophagus_goblet_cells_present	GDC_Name
+4206	iCaRe2	USED_BY
+4207	tumor_type	HCMI Name
+4208	LYMpre_nodal_organ_invol_trans_karn_scale	NMDP_FN
+4209	alcoholic_exposure_category	TCGA_XML_Name
+4210	PRSN_GENDER_TXT_TP	USED_BY
+4211	gastroesophageal_reflux_disease_treatment	HCMI Name
+4212	ajcc_staging_system_edition	GDC_Name
+4213	year_of_last_followup	HCMI Name
+4214	Days To Birth	GDC_Name
+4215	prothrombin_time_inr	GDC_Name
+4216	time_between_clamping_and_freezing	GDC_Name
+4217	alcohol_intensity	GDC_Name
+4218	days_to_last_followup	HCMI Name
+4219	treatment_or_therapy	GDC_Name
+4220	CTCAE4_LLT_NM	USED_BY
+4221	person_self-report_alcoholic_beverage_exposure	HCMI Name
+4222	Age At Diagnosis	GDC_Name
+4223	dlco_ref_predictive_percent	GDC_Name
+4224	alpha_fetoprotein_outcome_upper_value	HCMI Name
+4225	genetic_subclass	HCMI Name
+4226	site_of_resection_or_biopsy	GDC_Name
+4227	neuroblastoma_COG_risk_assessments	HCMI Name
+4228	laboratory_procedure_total_bilirubin_result_specified_upper_limit_of_normal_value	TCGA_XML_Name
+4229	height	TCGA_XML_Name
+4230	primary_site	HCMI Name
+4231	relationship_type	GDC_Name
+4232	prep_kar_lan_score	NMDP_FN
+4233	year_of_pancreatitis_onset	TCGA_XML_Name
+4234	alcohol_drinks_per_day	GDC_Name
+4235	enneking_msts_metastasis	GDC_Name
+4236	days_to_birth	GDC_Name
+4237	laboratory_prcoedure_platelet_result_upper_limit_of_normal_value	TCGA_XML_Name
+4238	index_date	HCMI Name
+4239	BiologicEntity:administrativeGenderCode	HCT_BRIDG
+4240	day_of_initial_pathologic_diagnosis	HCMI Name
+4241	height	GDC_Name
+4242	ACRIN	USED_BY
+4243	time_between_excision_and_freezing	GDC_Name
+4244	ca_19_9_antigen_value	GDC_Name
+4245	maximum_tumor_dimension	TCGA_XML_Name
+4246	person_daily_alcohol_consumption	HCMI Name
+4247	year_of_birth	TCGA_XML_Name
+4248	creatinine_normal_range_lower	GDC_Name
+4249	albumin_normal_range_lower	GDC_Name
+4250	tissue_type	HCMI Name
+4251	weeks_gestation_at_birth	GDC_Name
+4252	tobacco_smoking_quit_year	GDC_Name
+4253	icd_o_3_histology	TCGA_XML_Name
+4254	OHSU Knight	USED_BY
+4255	Enneking_MSTS_stage_tumor	HCMI Name
+4256	last_known_disease_status	GDC_Name
+4257	new_tumor_event_after_initial_treatment	TCGA_XML_Name
+4258	icd_10	TCGA_XML_Name
+4259	treatment_outcome	GDC_Name
+4260	pre_bronchodilator_fev1_percent	TCGA_XML_Name
+4261	primary_diagnosis	GDC_Name
+4262	icd_10_code	GDC_Name
+4263	L_DLC_ASS_PR_PTG_VAL	USED_BY
+4264	person_gender	HCMI Name
+4265	creatinine_normal_range_upper	GDC_Name
+4266	prior_malignancy	GDC_Name
+4267	month_of_birth	TCGA_XML_Name
+4268	treatment_outcome	HCMI Name
+4269	pack_years_smoked	GDC_Name
+4270	patient_death_reason	TCGA_XML_Name
+4271	smoking_history	HCMI Name
+4272	Enneking_MSTS_stage_metastasis	HCMI Name
+4273	NEO_HIST_GD	USED_BY
+4274	PERF_ASS_ECOG_SCALE	USED_BY
+4275	b_symptoms	TCGA_XML_Name
+4276	laboratory_procedure_international_normalization_ratio_result_lower_limit_of_normal_value	TCGA_XML_Name
+4277	venous_invasion	TCGA_XML_Name
+4278	laboratory_procedure_alpha_fetoprotein_outcome_lower_limit_of_normal_value	TCGA_XML_Name
+4279	ETHN_GRP_CAT_TXT	USED_BY
+4280	ethnic_group_category	HCMI Name
+4281	month_of_initial_pathologic_diagnosis	HCMI Name
+4282	day_of_tumor_recurrence	TCGA_XML_Name
+4283	RACE_CAT_TXT	USED_BY
+4284	cause_of_death	GDC_Name
+4285	colorectal_staging_risk_group	GDC_Name
+4286	esophageal_columnar_metaplasia_present	GDC_Name
+4287	anaplastic_lesion_category	HCMI Name
+4288	positive_peripancreatic_lymph_nodes	HCMI Name
+4289	comorbidity	GDC_Name
+4290	CPRE_FS_karn_scale	NMDP_FN
+4291	PT_VST	C3D Name
+4292	ICD-10_code	HCMI Name
+4293	LYMpre_nodal_organ_inv_diag_karn_scale	NMDP_FN
+4294	mitosis_karyorrhexis_index	GDC_Name
+4295	PRSN_HT_VAL	USED_BY
+4296	day_of_birth	TCGA_XML_Name
+4297	ICD-O-3_histology_code	HCMI Name
+4298	Patient's Sex	DICOM Attribute Name
+4299	month_of_tumor_recurrence	TCGA_XML_Name
+4300	frequency_of_alcohol_consumption	TCGA_XML_Name
+4301	LAB_TTLB_RS_ULN_VA	USED_BY
+4302	enneking_msts_grade	GDC_Name
+4303	person_neoplasm_cancer_status	TCGA_XML_Name
+4304	SDC Pilot Project	USED_BY
+4305	supratentorial_localization	TCGA_XML_Name
+4306	karnofsky_performance_score	TCGA_XML_Name
+4307	LYMpre_noit_ECOG_score	NMDP_FN
+4308	LAB_TTLBI_RSL_LL_VAL	USED_BY
+4309	albumin_normal_range_upper	GDC_Name
+4310	GOG	USED_BY
+4311	LAB_PT_RSLT_VAL	USED_BY
+4312	TUM_VAS_INVASI_IND_3	DCP Alt Name
+4313	karnofsky_performance_status	GDC_Name
+4314	laboratory_alpha_fetoprotein_outcome	HCMI Name
+4315	cea_upper_normal_range	GDC_Name
+4316	days_to_recurrence	HCMI Name
+4317	3162810v1.0:2017282v1.3	USED_BY
+4318	year_of_death	TCGA_XML_Name
+4319	year_of_last_followup	TCGA_XML_Name
+4320	pregnancy_week_number	HCMI Name
+4321	laboratory_procedure_prothrombin_time_result_value	TCGA_XML_Name
+4322	supratentorial_localization	HCMI Name
+4323	karnofsky_performance_status_assessment	HCMI Name
+4324	PT_HT_MSRMT	USED_BY
+4325	days_to_last_followup	TCGA_XML_Name
+4326	ann_arbor_b_symptoms	GDC_Name
+4327	month_of_last_followup	HCMI Name
+4328	relationship_age_at_diagnosis	GDC_Name
+4329	laboratory_procedure_albumin_result_upper_limit_of_normal_value	TCGA_XML_Name
+4330	tumor_grade	GDC_Name
+4331	AJCC_staging_handbook_edition	HCMI Name
+4332	tumor_mass_organ_origin	HCMI Name
+4333	month_of_death	TCGA_XML_Name
+4334	contiguous_organ_resection_site	TCGA_XML_Name
+4335	NINDS	USED_BY
+4336	premature_at_birth	GDC_Name
+4337	TOPO_ICDO	COG GDE Short Name
+4338	post_bronchodilator_fev1_percent	TCGA_XML_Name
+4339	viral_hepatitis_serologies	GDC_Name
+4340	vital_status	TCGA_XML_Name
+4341	LYMpre_DAFT_ECOG_score	NMDP_FN
+4342	bc_base_diag_menopause_kn	NMDP_FN
+4343	alcohol_consumption_weekly_usage	HCMI Name
+4344	progression_or_recurrence	GDC_Name
+4345	diabetes_treatment_type	GDC_Name
+4346	percent_neutrophil_infiltration	GDC_Name
+4347	gender	GDC_Name
+4348	ecog_performance_status	GDC_Name
+4349	PRM_TUMOR_LATERAL_TP	USED_BY
+4350	extranodal_involvement	TCGA_XML_Name
+4351	TUMOR_LG_DIM_MSRMT	USED_BY
+4352	Tumor_to_normal_control_tissue_distance	HCMI Name
+4353	stopped_smoking_year	TCGA_XML_Name
+4354	ECOG_performance_status_assessment	HCMI Name
+4355	weight	GDC_Name
+4356	path_confirm_diagnosis_matching	TCGA_XML_Name
+4357	Ethnicity	GDC_Name
+4358	day_of_death	TCGA_XML_Name
+4359	human_papillomavirus_type	TCGA_XML_Name
+4360	esophageal_columnar_mucosa_goblet_cell_present	HCMI Name
+4361	eastern_cancer_oncology_group	TCGA_XML_Name
+4362	esophageal_columnar_metaplasia_present	HCMI Name
+4363	venous_invasion_present	HCMI Name
+4364	ishak_fibrosis_score	GDC_Name
+4365	tumor_largest_dimension_diameter	GDC_Name
+4366	year_of_tobacco_smoking_onset	TCGA_XML_Name
+4367	LAB_ALB_RSL_LLN_VAL	USED_BY
+4368	primary_neoplasm_size	HCMI Name
+4369	diabetes_treatment	HCMI Name
+4370	bilirubin_normal_range_lower	GDC_Name
+4371	year_of_initial_pathologic_diagnosis	TCGA_XML_Name
+4372	3288120v1.0:3288102v1.0	USED_BY
+4373	neoplasm_histologic_grade	TCGA_XML_Name
+4374	fev1_ref_pre_bronch_percent	GDC_Name
+4375	race	TCGA_XML_Name
+4376	days_to_death	TCGA_XML_Name
+4377	tobacco_smoking_onset_year	GDC_Name
+4378	fev1_fvc_pre_bronch_percent	GDC_Name
+4379	prothrombin_time_normal_range_lower	GDC_Name
+4380	anaplasia_present_type	GDC_Name
+4381	laboratory_procedure_creatinine_result_lower_limit_of_normal_value	TCGA_XML_Name
+4382	HPST_CGHD_karn_scale	NMDP_FN
+4383	days_to_death	GDC_Name
+4384	year_of_initial_pathologic_diagnosis	HCMI Name
+4385	Enneking_MSTS_stage_grade	HCMI Name
+4386	barrett's_esophagus_diagnosis_goblet_cell_present	HCMI Name
+4387	carcinoembryonic_antigen_UNV	HCMI Name
+4388	PER_SMOK_YR_CUR_CT	USED_BY
+4389	tumor_type	TCGA_XML_Name
+4390	PreTed_clin_stat_prep_karn_scale	NMDP_FN
+4391	liver_fibrosis_ishak_score_category	TCGA_XML_Name
+4392	vascular_invasion_present	GDC_Name
+4393	day_of_initial_pathologic_diagnosis	TCGA_XML_Name
+4394	alpha_fetoprotein_normal_range_upper	GDC_Name
+4395	PER_COMORB_COND_NM	USED_BY
+4396	PT_MENOPAUSE_STAT	C3D Name
+4397	TMMKR_CA19-9_TST_VAL	USED_BY
+4398	KARN_PERF_STAT_SC	C3D Name
+4399	pre_ted_prep_karn_lan_scr	NMDP_FN
+4400	colorectal_tumor_risk_status	HCMI Name
+4401	ann_arbor_extranodal_involvement	GDC_Name
+4402	vital_status	HCMI Name
+4403	adverse_event	GDC_Name
+4404	regimen_indication	TCGA_XML_Name
+4405	sample_type	GDC_Name
+4406	laboratory_procedure_albumin_result_lower_limit_of_normal_value	TCGA_XML_Name
+4407	gender	TCGA_XML_Name
+4408	diagnosis_age	HCMI Name
+4409	DCI	USED_BY
+4410	SMK_USE_AVE_NUM	USED_BY
+4411	tumor_laterality	HCMI Name
+4412	Days to Last Known Disease Status	GDC_Name
+4413	PRSN_BMI_VAL	USED_BY
+4414	meduloblastoma_molecular_classification	GDC_Name
+4415	days_to_hiv_diagnosis	GDC_Name
+4416	PB_FEV1_TST_PTG_VAL	USED_BY
+4417	anaplastic_lesion_classification	HCMI Name
+4418	treatment_intent_type	GDC_Name
+4419	HPST_FS_karn_scale	NMDP_FN
+4420	day_of_last_followup	TCGA_XML_Name
+4421	icd_o_3_site	TCGA_XML_Name
+4422	therapeutic_agents	GDC_Name
+4423	peripancreatic_lymph_nodes_tested	GDC_Name
+4424	person_BMI_value	HCMI Name
+4425	Ctcae4xx	COG GDE Short Name
+4426	RITNfup_vital_karn_scale	NMDP_FN
+4427	CIG_AVE_D_PA_US_CT	USED_BY
+4428	preservation_method	HCMI Name
+4429	laterality	GDC_Name
+4430	RITNbase_info_karn_scale	NMDP_FN
+4431	PerformedMedicalConditionResult:value	HCT_BRIDG
+4432	goblet_cells_columnar_mucosa_present	GDC_Name
+4433	diagnosis_pathologically_confirmed	GDC_Name
+4434	SPOREs	USED_BY
+4435	Morphology	GDC_Name
+4436	tobacco_smoking_history	TCGA_XML_Name
+4437	Days To Recurrence	GDC_Name
+4438	MORPHO_ICDO	COG GDE Short Name
+4439	hpv_positive_type	GDC_Name
+4440	history_of_prior_malignancy	TCGA_XML_Name
+4441	tissue_or_organ_of_origin	GDC_Name
+4442	alcohol_days_per week	GDC_Name
+4443	alcohol_history	GDC_Name
+4444	alpha_fetoprotein_normal_range_lower	GDC_Name
+4445	karn_lan_score	NMDP_FN
+4446	dlco_predictive_percent	TCGA_XML_Name
+4447	PRSN_WT_VAL	USED_BY
+4448	enneking_msts_tumor_site	GDC_Name
+4449	drug_name	TCGA_XML_Name
+4450	non-cancerous_esophageal_columnar_mucosa_dysplasia	HCMI Name
+4451	PerformedObservationResult:value	HCT_BRIDG
+4452	year_of_tumor_recurrence	TCGA_XML_Name
+4453	fev1_fvc_post_bronch_percent	GDC_Name
+4454	alpha_fetoprotein	GDC_Name
+4455	amount_of_alcohol_consumption_per_day	TCGA_XML_Name
+4456	platelets_normal_range_lower	GDC_Name
+4457	LAB_PLT_RSL_ULN_VAL	USED_BY
+4458	NRDS	USED_BY
+4459	bmi	GDC_Name
+4460	system_version	TCGA_XML_Name
+4461	vital_status	GDC_Name
+4462	age_at_diagnosis	GDC_Name
+4463	month_of_initial_pathologic_diagnosis	TCGA_XML_Name
+4464	distance_normal_to_tumor	GDC_Name
+4465	LYMpre_noid_ECOG_score	NMDP_FN
+4466	JMMLpre_lab_diag_ldh_uln_value	NMDP_FN
+4467	therapy_type_notes	TCGA_XML_Name
+4468	mental_status_changes	TCGA_XML_Name
+4469	immunophenotype_cytochemistry_percent_positive	TCGA_XML_Name
+4470	regimen_indication_notes	TCGA_XML_Name
+4471	PERF_ASSESS_TMPT_CAT	USED_BY
+4472	food_allergy_types	TCGA_XML_Name
+4473	new_tumor_cellular_differentiation	TCGA_XML_Name
+4474	ras_family_gene_genotyping_outcome_lab_results_text	TCGA_XML_Name
+4475	TDIS_MDS_oth_ab_spec	NMDP_FN
+4476	horm_ther	TCGA_XML_Name
+4477	mye_base_srm_creat_dia_kn	NMDP_FN
+4478	year_of_brachytherapy_begin_occurrence	TCGA_XML_Name
+4479	PT_PREG_ABORTION_CT	USED_BY
+4480	ALC_QUIT_DUR_YR_NUM	USED_BY
+4481	day_of_well_differentiated_liposarcoma_resection	TCGA_XML_Name
+4482	leiomyosarcoma_major_vessel_involvement	TCGA_XML_Name
+4483	neoadjuvant_therapy_type	HCMI Name
+4484	total_dose_units	TCGA_XML_Name
+4485	key_hsct_type	NMDP_FN
+4486	THYM_MASAOKA_STG	C3D Name
+4487	muc_base_pulm_fct_eval_yn	NMDP_FN
+4488	ER_DETECT_MTHD_TXT	C3D Name
+4489	induction_course_complete	TCGA_XML_Name
+4490	LN_POS_CT	USED_BY
+4491	AMLF_DLR_kary_aml_cyto_abn_tp	NMDP_FN
+4492	metastatic_breast_carcinoma_progesterone_receptor_level_cell_percent_category	TCGA_XML_Name
+4493	human_papillomavirus_laboratory_procedure_performed_text	TCGA_XML_Name
+4494	breast_carcinoma_immunohistochemistry_er_pos_finding_scale	TCGA_XML_Name
+4495	metastatic_breast_carcinoma_pos_finding_progesterone_receptor_other_measure_scale_text	TCGA_XML_Name
+4496	cll_base_diag_abnm_oth_sp	NMDP_FN
+4497	CanDxDt	COG GDE Short Name
+4498	mds_base_prep_oth_ab_spec	NMDP_FN
+4499	additional_embolization_or_ablation_therapeutic_procedure_post_recurrent_disease_performed_indicator	TCGA_XML_Name
+4500	immuno_therapy	TCGA_XML_Name
+4501	RT_TTL_FRACS_CT	USED_BY
+4502	ldh1_mutation_tested	TCGA_XML_Name
+4503	radiation_therapy_not_administered_specify	TCGA_XML_Name
+4504	ALLpre_lab_prep_oth_ab_spec	NMDP_FN
+4505	year_of_first_biochemical_recurrence	TCGA_XML_Name
+4506	idm_key_hct_alt_type	NMDP_FN
+4507	primary_melanoma_at_diagnosis_count	TCGA_XML_Name
+4508	biochemical_recurrence	TCGA_XML_Name
+4509	day_of_normal_sample_procurement	TCGA_XML_Name
+4510	additional_treatment_completion_success_outcome	TCGA_XML_Name
+4511	OTH_TUMOR_C_M_STG	COG GDE Short Name
+4512	FISHProbeUse	COG GDE Short Name
+4513	lactate_dehydrogenase_result	TCGA_XML_Name
+4514	day_of_last_known_alive	TCGA_XML_Name
+4515	consent_or_death_status	TCGA_XML_Name
+4516	h_pylori_infection	TCGA_XML_Name
+4517	POLYP_PRES_IND-3	USED_BY
+4518	PerformedObservation:methodCode	HCT_BRIDG
+4519	month_of_drug_therapy_start	HCMI Name
+4520	metastatic_breast_carcinoma_progesterone_receptor_status	TCGA_XML_Name
+4521	AMLF_DTE_fish_oth_ab_spec	NMDP_FN
+4522	2190067v1.0:3114045v1.0	USED_BY
+4523	total_pelv_lnr	TCGA_XML_Name
+4524	diagnostic_mri_result_outcome	TCGA_XML_Name
+4525	total_pelv_lnp	TCGA_XML_Name
+4526	diagnostic_ct_abd_pelvis_performed	TCGA_XML_Name
+4527	neu_base_tx_rad_oth_frac	NMDP_FN
+4528	country	TCGA_XML_Name
+4529	mibc_90day_post_resection_bcg	TCGA_XML_Name
+4530	endothelial_proliferation	TCGA_XML_Name
+4531	year_of_sample_procurement	TCGA_XML_Name
+4532	ssc_base_diag_creat_kn	NMDP_FN
+4533	person_concomitant_prostate_carcinoma_pathologic_t_stage	TCGA_XML_Name
+4534	PRM_TUM_MUL_PRES_IND	USED_BY
+4535	2238456v1.0:3114002v1.0	USED_BY
+4536	3121561v1.0:2018691v1.0	USED_BY
+4537	Bands	COG GDE Short Name
+4538	animal_insect_allergy_history	TCGA_XML_Name
+4539	PT_FU_TM_PERIOD_TP	USED_BY
+4540	hematology_serum_creatinine_laboratory_result_value_in_mg_dl	TCGA_XML_Name
+4541	helicobacter_pylori_infection_diagnosis	HCMI Name
+4542	LEU_SPEC_CEL_SOUR_TP	USED_BY
+4543	primary_neoplasm_focus_type	TCGA_XML_Name
+4544	eml4_alk_translocation_result	TCGA_XML_Name
+4545	day_of_well_differentiated_liposarcoma_primary_dx	TCGA_XML_Name
+4546	cll_base_diag_ldh_up_limt	NMDP_FN
+4547	axillary_lymph_node_stage_other_method_descriptive_text	TCGA_XML_Name
+4548	lymph_node_examined_count	HCMI Name
+4549	metastatic_breast_carcinoma_her2_erbb_pos_finding_fluorescence_in_situ_hybridization_calculation_method_text	TCGA_XML_Name
+4550	month_of_second_biochemical_recurrence	TCGA_XML_Name
+4551	ALLF_DTE_fsh_all_cyto_abn_type	NMDP_FN
+4552	extrahepatic_recurrent_disease_location_text	TCGA_XML_Name
+4553	pgr_detection_method_text	TCGA_XML_Name
+4554	other_metastatic_involvement_anatomic_site	TCGA_XML_Name
+4555	diagnosis_cytogenetic_analysis	TCGA_XML_Name
+4556	loss_expression_of_mismatch_repair_proteins_by_ihc_result	TCGA_XML_Name
+4557	prior_glioma	TCGA_XML_Name
+4558	breast_carcinoma_immunohistochemistry_progesterone_receptor_pos_finding_scale	TCGA_XML_Name
+4559	metastatic_breast_carcinoma_immunohistochemistry_progesterone_receptor_positive_finding_scale_type	TCGA_XML_Name
+4560	days_to_pathology_review	TCGA_XML_Name
+4561	prep_ldh_upper_limit	NMDP_FN
+4562	AJCC_tumor_stage_code	HCMI Name
+4563	lab_procedure_bone_marrow_metamyelocyte_result_value	TCGA_XML_Name
+4564	complete_response_observed	TCGA_XML_Name
+4565	barretts_esophagus	HCMI Name
+4566	radiation_dosage	TCGA_XML_Name
+4567	lab_procedure_blast_cell_outcome_percentage_value	TCGA_XML_Name
+4568	carcinoembryonic_antigen_value	HCMI Name
+4569	presence_of_pathological_nodal_extracapsular_spread	TCGA_XML_Name
+4570	performance_status_assessment_timepoint_category_other_text	TCGA_XML_Name
+4571	TUMOR_LYMVAC_INV_IND	USED_BY
+4572	colon_carcinoma_polyp_occurrence	HCMI Name
+7357	CMLF_AUTH_FirstName	NMDP_FN
+4573	TDIS_ALL_KARYL_all_cy_abn_type	NMDP_FN
+4574	tumor_multifocal	TCGA_XML_Name
+4575	TDIS_AML_FISHD_aml_cy_abn_type	NMDP_FN
+4576	LYMpre_lab_trans_ldh_uln_value	NMDP_FN
+4577	INST_NAME	USED_BY
+4578	day_of_fdg_or_ct_pet_performed	TCGA_XML_Name
+4579	other_contiguous_organ_resection_site	TCGA_XML_Name
+4580	year_of_submitted_specimen_dx	TCGA_XML_Name
+4581	PreTed_pri_dis_hct_mds_mpn_post_trans_oth_ab_spec	NMDP_FN
+4582	OTH_TUMOR_C_N_STG	COG GDE Short Name
+4583	smokeless_tobacco_use_per_day	TCGA_XML_Name
+4584	number_of_first_degree_relatives_with_cancer_diagnosis	TCGA_XML_Name
+4585	lymphnode_dissection_method_left	TCGA_XML_Name
+4586	ret_ptc_rearrangement_genotyping_outcome_lab_results_text	TCGA_XML_Name
+4587	number_of_lymphnodes_positive	HCMI Name
+4588	LUNG_TUMOR_P_M_ST	USED_BY
+4589	additional_immuno_therapy	TCGA_XML_Name
+4590	year_of_diagnostic_computed_tomography_performed	TCGA_XML_Name
+4591	2534236v1.0:2957355v2.0	USED_BY
+4592	LAB_BM_CE_OC_PTG_VAL	USED_BY
+4593	method_of_normal_sample_procurement	TCGA_XML_Name
+4594	TDIS_AML_KARYD_oth_ab_spec	NMDP_FN
+4595	TDIS_AML_KARYL_oth_ab_spec	NMDP_FN
+4596	diagnostic_ct_result_outcome	TCGA_XML_Name
+4597	breslow_depth_value	TCGA_XML_Name
+4598	specific_tumor_total_necrosis_percent	TCGA_XML_Name
+4599	submitted_for_lce	TCGA_XML_Name
+4600	other_vessel_used	TCGA_XML_Name
+4601	family_history_of_cancer	TCGA_XML_Name
+4602	tumor_weight	TCGA_XML_Name
+4603	day_of_sample_procurement	TCGA_XML_Name
+4604	lymphovascular_invasion_indicator	HCMI Name
+4605	resp_maint_from_bcg_admin_month_dur	TCGA_XML_Name
+4606	platelet_qualitative_result	TCGA_XML_Name
+4607	tumor_location	HCMI Name
+4608	patient_personal_medical_history_thyroid_gland_disorder_name	TCGA_XML_Name
+4609	patient_personal_medical_history_thyroid_other_specify_text	TCGA_XML_Name
+4610	additional_radiation_therapy	TCGA_XML_Name
+4611	other_malignancy_histological_type_text	TCGA_XML_Name
+4612	year_of_definitive_surgical_procedure_performed	TCGA_XML_Name
+4613	contiguous_organ_invaded	TCGA_XML_Name
+4614	leukemia_french_american_british_morphology_code	TCGA_XML_Name
+4615	TmrDepth	COG GDE Short Name
+4616	tumor_location	TCGA_XML_Name
+4617	surgery_type	TCGA_XML_Name
+4618	CT_RGM_TP	USED_BY
+4619	month_of_diagnostic_computed_tomography_performed	TCGA_XML_Name
+4620	year_of_bone_scan_performed	TCGA_XML_Name
+4621	CMLF_DABR_karyo_oth_ab_spec	NMDP_FN
+4622	i_131_total_administered_dose	TCGA_XML_Name
+4623	day_of_performance_status_follow_up_score	TCGA_XML_Name
+4624	esophagus_normal_tissue_anatomic_site	HCMI Name
+4625	month_of_drug_therapy_start	TCGA_XML_Name
+4626	PtDxMlgIND	COG GDE Short Name
+4627	cll_base_prep_ldh_up_limt	NMDP_FN
+4628	metastatic_breast_carcinoma_her2_erbb_method_calculation_method_text	TCGA_XML_Name
+4629	SURG_PROC_APPRO_TYPE	USED_BY
+4630	PROT_CLN_ST_ID_NUM	USED_BY
+4631	month_of_drug_therapy_end	TCGA_XML_Name
+4632	TUMOR_LYMVAC_INV_IND	C3D Name
+4633	day_of_pancreatitis_onset	TCGA_XML_Name
+4634	PT_ETHNGRP_CAT	USED_BY
+4635	AMLF_DBR_kary_aml_cyto_abn_tp	NMDP_FN
+4636	ffpe_tumor_slide_submitted	TCGA_XML_Name
+4637	margin_status	TCGA_XML_Name
+4638	month_of_third_biochemical_recurrence	TCGA_XML_Name
+4639	days_to_pancreatitis_onset	TCGA_XML_Name
+4640	other_genotyping_outcome_lab_results_text	TCGA_XML_Name
+4641	brachytherapy_administered_status	TCGA_XML_Name
+4642	post_surgical_procedure_assessment_thyroid_gland_carcinoma_status	TCGA_XML_Name
+4643	ALLF_DBR_fsh_oth_ab_spec	NMDP_FN
+4644	START_DT	C3D Name
+4645	antireflux_treatment_type	HCMI Name
+4646	local_disease_recurrence	TCGA_XML_Name
+4647	apl_base_tx_oth_imm_spec	NMDP_FN
+4648	radiosensitizing_agent_administered_indicator	TCGA_XML_Name
+4649	thyroid_gland_carcinoma_regional_lymph_node_involvement_anatomic_sites_text	TCGA_XML_Name
+4650	malignancy_type	TCGA_XML_Name
+4651	ncedna_dna_vol	TCGA_XML_Name
+4652	PreTed_prime_dis_hct_all_oth_ab_spec	NMDP_FN
+4653	tumor_depth	TCGA_XML_Name
+4654	her2_erbb_method_calculation_method_text	TCGA_XML_Name
+4655	route_of_administration	TCGA_XML_Name
+4656	TDIS_ALL_FISHB_oth_ab_spec	NMDP_FN
+4657	day_of_submitted_specimen_dx	TCGA_XML_Name
+4658	PreTed_prime_dis_hct_mds_mpn_oth_ab_spec	NMDP_FN
+4659	metastatic_site_at_diagnosis	TCGA_XML_Name
+4660	cervical_carcinoma_pelvic_extension_text	TCGA_XML_Name
+4661	PCDpre_lab_diag_fish_oth_ab_spec	NMDP_FN
+4662	DEATH_DT	C3D Name
+4663	COLON_POLYP_CT	USED_BY
+4664	LAB_BC_OC_PTG_VAL	USED_BY
+4665	fdg_or_ct_pet_performed_outcome	TCGA_XML_Name
+4666	normal_tissue_anatomic_site	TCGA_XML_Name
+4667	cytogenetic_abnormality_other	TCGA_XML_Name
+4668	ALLF_DLR_fsh_oth_ab_spec	NMDP_FN
+4669	cancer_diagnosis_first_degree_relative_number	TCGA_XML_Name
+4670	BoneMarrow	NMDP_FN
+4671	radiologic_tumor_width	TCGA_XML_Name
+4672	adjacent_hepatic_tissue_inflammation_extent_type	TCGA_XML_Name
+4673	TDIS_AML_KARYD_aml_cy_abn_type	NMDP_FN
+4674	first_diagnosis_age_of_food_allergy	TCGA_XML_Name
+4675	diagnosis	HCMI Name
+4676	occupation_primary_job	TCGA_XML_Name
+4677	ALLF_DBR_fsh_all_cyto_abn_type	NMDP_FN
+4678	primary_lymph_node_presentation_assessment	TCGA_XML_Name
+4679	metastatic_breast_carcinoma_progesterone_receptor_detection_method_text	TCGA_XML_Name
+4680	BR_PRM_SX_PRO_PER_TP	C3D Name
+4681	molecular_analysis_performed_indicator	TCGA_XML_Name
+4682	PreTed_prime_dis_hct_aml_oth_ab_spec	NMDP_FN
+4683	first_presenting_symptom	TCGA_XML_Name
+4684	BM_INVL_IND-3	USED_BY
+4685	acute_myeloid_leukemia_calgb_cytogenetics_risk_category	TCGA_XML_Name
+4686	NEOP_CLIN_AJCC_GRP_STG	COG GDE Short Name
+4687	percent_lymphocyte_infiltration	GDC_Name
+4688	JMMLpre_lab_diag_cyto_fish_lab_rpt_submiss_yn	NMDP_FN
+4689	day_of_second_biochemical_recurrence	TCGA_XML_Name
+4690	radiologic_tumor_depth	TCGA_XML_Name
+4691	ICF_SIG_DT	USED_BY
+4692	3174022	TCGA_XML_Name
+4693	day_of_brachytherapy_begin_occurrence	TCGA_XML_Name
+4694	BRAF_gene_analysis	HCMI Name
+4695	metastatic_neoplasm_confirmed_diagnosis_method_text	TCGA_XML_Name
+4696	NEOP_MIT_ASSESS_CT	C3D Name
+4697	targeted_molecular_therapy	TCGA_XML_Name
+4698	metastatic_breast_carcinoma_pos_finding_other_scale_measurement_text	TCGA_XML_Name
+4699	patient_history_immune_system_and_related_disorders_name	TCGA_XML_Name
+4700	pathologic_stage	HCMI Name
+4701	therapy_type	TCGA_XML_Name
+4702	LAB_TTLB_RS_ULN_VAL	USED_BY
+4703	LYMpre_DAFT_ldh_uln_value	NMDP_FN
+4704	PCDpre_lab_diag_oth_ab_spec	NMDP_FN
+4705	AMLF_DBR_fish_oth_ab_spec	NMDP_FN
+4706	MACpre_lab_diag_ldh_uln_value	NMDP_FN
+4707	new_neoplasm_confirmed_diagnosis_method_name	TCGA_XML_Name
+4708	breast_carcinoma_immunohistochemistry_pos_cell_score	TCGA_XML_Name
+4709	smokeless_tobacco_use_regularly	TCGA_XML_Name
+4710	animal_insect_allergy_types	TCGA_XML_Name
+4711	tumor_total_necrosis_percent	TCGA_XML_Name
+4712	year_of_second_biochemical_recurrence	TCGA_XML_Name
+4713	year_of_completion_of_curative_tx	TCGA_XML_Name
+4714	WEIGHT_LB	C3D Name
+4715	chemotherapy_negation_radiation_therapy_concurrent_not_administered_reason	TCGA_XML_Name
+4716	year_of_radiation_therapy_end	TCGA_XML_Name
+4717	path_confirm_report_attached	TCGA_XML_Name
+4718	hist_of_non_mibc	TCGA_XML_Name
+4719	pos_finding_metastatic_breast_carcinoma_estrogen_receptor_other_measuremenet_scale_text	TCGA_XML_Name
+4720	adjuvant_postoperative_targeted_therapy	HCMI Name
+4721	TDIS_PCD_oth_ab_spec	NMDP_FN
+4722	person_history_leukemogenic_agent_other_exposure_text	TCGA_XML_Name
+4723	radiologic_tumor_burden	TCGA_XML_Name
+4724	WEIGHT_KG	C3D Name
+4725	PRIOR_CA_DX_DT	USED_BY
+4726	RT_N_ADM_SPEC	USED_BY
+4727	JMMLpre_lab_prep_oth_ab_spec	NMDP_FN
+4728	BRESTCA_SX_MARG_STAT	USED_BY
+4729	state_province_country_of_procurement	TCGA_XML_Name
+4730	hysterectomy_performed_text	TCGA_XML_Name
+4731	DEATH_CAUSE_RSN	USED_BY
+4732	palisading_necrosis	TCGA_XML_Name
+4733	tissue_retrospective_collection_indicator	TCGA_XML_Name
+4734	TTC_CAN_IGCCC_PRGN_STG	COG GDE Short Name
+4735	month_of_bone_scan_performed	TCGA_XML_Name
+4736	neu_base_rad_oth_num_frac	NMDP_FN
+4737	GYN_TUMOR_GP_ST	USED_BY
+4738	location_in_lung_parenchyma	TCGA_XML_Name
+4739	peritoneal_wash	TCGA_XML_Name
+4740	first_diagnosis_age_of_animal_insect_allergy	TCGA_XML_Name
+4741	standardized_uptake_value_cervix_uteri_assessment_measurement	TCGA_XML_Name
+4742	TX_STT_DT	USED_BY
+4743	GLEASON_SEC_PATT_VAL	C3D Name
+4744	year_of_fdg_or_ct_pet_performed	TCGA_XML_Name
+4745	er_detection_method_text	TCGA_XML_Name
+4746	cumulative_agent_total_dose	TCGA_XML_Name
+4747	2655783v1.0:2655757v1.0	USED_BY
+4748	lab_procedure_her2_neu_in_situ_hybrid_outcome_type	TCGA_XML_Name
+4749	path_confirm_tumor_nuclei_metrics	TCGA_XML_Name
+4750	surgical_approach	TCGA_XML_Name
+4751	postoperative_rx_tx	TCGA_XML_Name
+4752	MACpre_lab_diag_oth_ab_spec	NMDP_FN
+4753	thyroid_gland_carcinoma_involvement_regional_lymph_node_type	TCGA_XML_Name
+4754	prescribed_dose_units	TCGA_XML_Name
+4755	i_131_first_administered_dose	TCGA_XML_Name
+4756	neu_base_tum_mrkr_ldh_up	NMDP_FN
+4757	AGT_CRSE_CT	USED_BY
+4758	barrett's_esophagus_diagnosis	HCMI Name
+4759	number_of_relatives_with_stomach_cancer	TCGA_XML_Name
+4760	ALLpre_lab_diag_oth_ab_spec	NMDP_FN
+4761	non_mibc_tx	TCGA_XML_Name
+4762	primary_tumor_laterality	HCMI Name
+4763	Patient's Birth Date	DICOM Attribute Name
+4764	braf_gene_analysis_result	TCGA_XML_Name
+4765	percent_eosinophil_infiltration	GDC_Name
+4766	asbestos_exposure_indicator	HCMI Name
+4767	person_primary_industry_text	TCGA_XML_Name
+4768	Philips PET/CT SUV Factor	DICOM Attribute Name
+4769	TDIS_ALL_KARYL_oth_ab_spec	NMDP_FN
+4770	Tumor_stage	HCMI Name
+4771	ADJ_HOR_POP_ADM_IND3	USED_BY
+4772	year_of_tumor_progression	TCGA_XML_Name
+4773	percent_granulocyte_infiltration	GDC_Name
+4774	number_of_loci_tested	TCGA_XML_Name
+4775	tumor_level	TCGA_XML_Name
+4776	TDIS_ALL_KARYD_oth_ab_spec	NMDP_FN
+4777	day_of_liver_graft_together_new_neoplasm_performed	TCGA_XML_Name
+4778	3194098v1.0:2018320v1.0	USED_BY
+4779	specimen_collected_method	HCMI Name
+4780	TDIS_ALL_KARYB_oth_ab_spec	NMDP_FN
+4781	D_MOL_AN_MET_O_TXT	DCP Alt Name
+4782	TDIS_ALL_FISHB_all_cy_abn_type	NMDP_FN
+4783	positive_finding_estrogen_receptor_other_measurement_scale_text	TCGA_XML_Name
+4784	tumor_residual_disease	TCGA_XML_Name
+4785	breast_carcinoma_surgical_procedure_name	TCGA_XML_Name
+4786	all_base_diag_oth_ab_spec	NMDP_FN
+4787	AMLF_DTE_fish_aml_cyto_abn_typ	NMDP_FN
+4788	number_of_successful_pregnancies_which_resulted_in_at_least_1_live_birth	TCGA_XML_Name
+4789	tumor_nuclei_percent	TCGA_XML_Name
+4790	WT_LB_NUM	USED_BY
+4791	lab_procedure_bone_marrow_promonocyte_count_result_percent_value	TCGA_XML_Name
+4792	SPEC_COLL_METH_NM	USED_BY
+4793	PRSN_BRTH_DT	C3D Name
+4794	month_of_laboratory_procedure_tumor_marker_squamous_cell_carcinoma_antigen_result	TCGA_XML_Name
+4795	SpcmIDNo.	COG GDE Short Name
+4796	2011579v3.0:2018278v2.0	USED_BY
+4797	lab_proc_her2_neu_immunohistochemistry_receptor_status	TCGA_XML_Name
+4798	prior_hematologic_disorder_diagnosis_indicator	TCGA_XML_Name
+4799	metastatic_site_at_diagnosis_other	TCGA_XML_Name
+4800	RT_ADM_DOSE_UOM	USED_BY
+4801	oligonucleotide_primer_pair_laboratory_procedure_performed_text	TCGA_XML_Name
+4802	GERD_HIST_IND	C3D Name
+4803	lab_procedure_bone_marrow_diff_not_reported_reason	TCGA_XML_Name
+4804	muc_post_pulm_fct_eval_yn	NMDP_FN
+4805	psa_value	TCGA_XML_Name
+4806	lab_procedure_hemoglobin_result_specified_value	TCGA_XML_Name
+4807	CLLP_DALE_oth_ab_spec	NMDP_FN
+4808	KRAS_mutation_indicator	HCMI Name
+4809	smokeless_tobacco_use_age_at_quit	TCGA_XML_Name
+4810	month_of_chemotherapy_start	TCGA_XML_Name
+4811	er_level_cell_percentage_category	TCGA_XML_Name
+4812	tumor_lymphatic_invasion	HCMI Name
+4813	days_to_well_differentiated_liposarcoma_primary_dx	TCGA_XML_Name
+4814	pathologic_stage	TCGA_XML_Name
+4815	initial_pathologic_diagnosis_method	TCGA_XML_Name
+4816	patient_ID	HCMI Name
+4817	MetStOthSpf	COG GDE Short Name
+4818	top_slide_submitted	TCGA_XML_Name
+4819	gleason_score_primary	TCGA_XML_Name
+4820	EGFR_mutation_result	HCMI Name
+4821	her2_neu_chromosone_17_signal_ratio_value	TCGA_XML_Name
+4822	tumor_marker_CA-19-9_test_LNV	HCMI Name
+4823	sar_base_diag_met_oth_spe	NMDP_FN
+4824	progesterone_receptor_level_cell_percent_category	TCGA_XML_Name
+4825	kras_gene_analysis_performed	TCGA_XML_Name
+4826	normal_tissue_anatomic_site	HCMI Name
+4827	followup_treatment_success	TCGA_XML_Name
+4828	breast_carcinoma_estrogen_receptor_status	TCGA_XML_Name
+4829	brachytherapy_first_reference_point_administered_total_dose	TCGA_XML_Name
+4830	her2_neu_and_centromere_17_copy_number_analysis_input_total_number_count	TCGA_XML_Name
+4831	PT_ID	USED_BY
+4832	3288291v1.0:2182115v1.0	USED_BY
+4833	RTE_NM	C3D Name
+4834	non_nodal_tumor_deposits	TCGA_XML_Name
+4835	subsequent_primary_melanoma_during_followup	TCGA_XML_Name
+4836	month_of_brachytherapy_begin_occurrence	TCGA_XML_Name
+4837	TX_CYCLE_NUM	USED_BY
+4838	leiomyosarcoma_histologic_subtype	TCGA_XML_Name
+4839	total_aor_lnr	TCGA_XML_Name
+4840	her2_erbb_pos_finding_cell_percent_category	TCGA_XML_Name
+4841	her2_and_centromere_17_positive_finding_other_measurement_scale_text	TCGA_XML_Name
+4842	molecular_analysis_abnormality_testing_result	TCGA_XML_Name
+4843	b_cell_tumor_slide_submitted	TCGA_XML_Name
+4844	year_of_normal_sample_procurement	TCGA_XML_Name
+4845	HpoDpdChmDtcMtdTp	COG GDE Short Name
+4846	neoadjuvant_therapy_administered	HCMI Name
+4847	days_to_treatment_end	HCMI Name
+4848	followup_case_report_form_submission_reason	TCGA_XML_Name
+4849	Gntyp_Anl_Prfm_Ind	COG GDE Short Name
+4850	AMLF_DBR_fish_aml_cyto_abn_tp	NMDP_FN
+4851	lymphnodes_examined	TCGA_XML_Name
+4852	LAB_ALB_RSL_SPE_VAL	USED_BY
+4853	BDY_WT_KG	USED_BY
+4854	lab_procedure_monocyte_result_percent_value	TCGA_XML_Name
+4855	GLEASON_SEC_PATT_VAL	USED_BY
+4856	human_papillomavirus_other_type_text	TCGA_XML_Name
+4857	additional_surgery_locoregional_procedure	TCGA_XML_Name
+4858	month_of_diagnostic_mri_performed	TCGA_XML_Name
+4859	her2_erbb_pos_finding_fluorescence_in_situ_hybridization_calculation_method_text	TCGA_XML_Name
+4860	highest_gleason_score	TCGA_XML_Name
+4861	path_confirm_tumor_necrosis_metrics	TCGA_XML_Name
+4862	first_nonlymph_node_metastasis_anatomic_site	TCGA_XML_Name
+4863	hepatocellular_carcinoma_primary_risk_factor_name	TCGA_XML_Name
+4864	PT_PREG_SPONTAN_CT	USED_BY
+4865	2632125v1.0:3506068v1.0	USED_BY
+4866	JMMLpre_lab_diag_oth_ab_spec	NMDP_FN
+4867	aln_pos_light_micro	TCGA_XML_Name
+4868	follow-up_assessment_outcome_success	HCMI Name
+4869	month_of_last_known_alive	TCGA_XML_Name
+9015	IMG_QUAL_CAT	COG GDE Short Name
+4870	loss_gene_expression_mismatch_protein_immunohistochemistry	HCMI Name
+4871	lymphatic_invasion	TCGA_XML_Name
+4872	Histological subtype	HCMI Name
+4873	TDIS_AML_oth_ab_spec	NMDP_FN
+4874	breast_carcinoma_progesterone_receptor_status	TCGA_XML_Name
+4875	metastatic_breast_carcinoma_erbb2_immunohistochemistry_level_result	TCGA_XML_Name
+4876	PT_PREG_THERAPEU_CT	USED_BY
+4877	year_of_initial_score_performance_status_scale	TCGA_XML_Name
+4878	neu_base_ktyp_ab_oth_spec	NMDP_FN
+4879	TDIS_AML_FISHB_aml_cy_abn_type	NMDP_FN
+4880	adjuvant_postoperative_radiation_therapy	HCMI Name
+4881	smokeless_tobacco_use_age_at_start	TCGA_XML_Name
+4882	neu_base_tx_rad_frac_num	NMDP_FN
+4883	cervical_neoplasm_pathologic_margin_involved_text	TCGA_XML_Name
+4884	person_occupation_description_text	TCGA_XML_Name
+4885	TDIS_AML_KARYL_aml_cy_abn_type	NMDP_FN
+4886	kras_mutation_found	TCGA_XML_Name
+4887	UOMAgtDs	COG GDE Short Name
+4888	braf_gene_analysis_performed	TCGA_XML_Name
+4889	lab_procedure_bone_marrow_band_cell_result_percent_value	TCGA_XML_Name
+4890	family_history_of_stomach_cancer	TCGA_XML_Name
+4891	progression_determined_by	TCGA_XML_Name
+4892	lab_procedure_bone_marrow_promyelocyte_result_percent_value	TCGA_XML_Name
+4893	year_of_liver_graft_together_new_neoplasm_performed	TCGA_XML_Name
+4894	PRIM_OTX_DZ_SITE_NM	USED_BY
+4895	her2_neu_metastatic_breast_carcinoma_copy_analysis_input_total_number	TCGA_XML_Name
+4896	lymph_node_location_positive_pathology_name	TCGA_XML_Name
+4897	inf_key_hct_type	NMDP_FN
+4898	colon_polyps_present	TCGA_XML_Name
+4899	bone_scan_results	TCGA_XML_Name
+4900	PROS_SX_PROC	USED_BY
+4901	first_recurrent_non_nodal_metastatic_anatomic_site_descriptive_text	TCGA_XML_Name
+4902	metastatic_breast_carcinoma_lab_proc_her2_neu_immunohistochemistry_receptor_status	TCGA_XML_Name
+4903	lymph_node_preoperative_assessment_diagnostic_imaging_type	TCGA_XML_Name
+4904	DZS_1ST_TX_PD	COG GDE Short Name
+4905	tumor_marker_CA-19-9_test_UNV	HCMI Name
+4906	i_131_total_administered_preparation_technique	TCGA_XML_Name
+4907	DeathDATE	COG GDE Short Name
+4908	TDIS_AML_FISHB_oth_ab_spec	NMDP_FN
+4909	performance_status_scale_timing	TCGA_XML_Name
+4910	GLEASON_PRM_PATT_VAL	C3D Name
+4911	erythrocyte_sedimentation_rate_result	TCGA_XML_Name
+4912	month_of_performance_status_follow_up_score	TCGA_XML_Name
+4913	PT_PREG_CT	USED_BY
+4914	day_of_radiation_therapy_end	TCGA_XML_Name
+4915	mye_base_ldh_diag_up_lim	NMDP_FN
+4916	esophageal_carcinoma_across_gastroesophageal_junction_present	HCMI Name
+4917	family_history_of_primary_brain_tumor	TCGA_XML_Name
+4918	histologic_disease_progression_present_indicator	TCGA_XML_Name
+4919	year_of_drug_therapy_start	TCGA_XML_Name
+4920	day_of_diagnostic_computed_tomography_performed	TCGA_XML_Name
+4921	hypertension	TCGA_XML_Name
+4922	reflux_history	TCGA_XML_Name
+4923	GEN_ABN_TEST_SPECIFY	COG GDE Short Name
+4924	lab_procedure_bone_marrow_prolymphocyte_result_percent_value	TCGA_XML_Name
+4925	radiologic_tumor_length	TCGA_XML_Name
+4926	AMLpre_lab_prep_oth_ab_spec	NMDP_FN
+4927	PRM_TUM_MUL_PRES_IND	C3D Name
+4928	P_STEROIDTX_ADM_IND2	USED_BY
+4929	new_non_melanoma_event_histologic_type_text	TCGA_XML_Name
+4930	first_diagnosis_age_asth_ecz_hay_fev_mold_dust	TCGA_XML_Name
+4931	year_of_laboratory_procedure_tumor_marker_squamous_cell_carcinoma_antigen_result	TCGA_XML_Name
+4932	hpv_status_by_p16_testing	TCGA_XML_Name
+4933	year_of_brachytherapy_end_occurrence	TCGA_XML_Name
+4934	CLLP_LSDX_ldh_uln_value	NMDP_FN
+4935	anatomic_neoplasm_subdivision	TCGA_XML_Name
+4936	perineural_invasion_present	TCGA_XML_Name
+4937	new_neoplasm_event_post_initial_therapy_diagnosis_method_text	TCGA_XML_Name
+4938	metastatic_neoplasm_confirmed	TCGA_XML_Name
+4939	number_of_lymphnodes_examined	TCGA_XML_Name
+4940	birth_control_pill_history_usage_category	TCGA_XML_Name
+4941	polyp_present_indicator	HCMI Name
+4942	day_of_completion_of_curative_tx	TCGA_XML_Name
+4943	SPEC_SUBM_TP	USED_BY
+4944	year_of_diagnostic_mri_performed	TCGA_XML_Name
+4945	base_pre_HCT_prep_rad_frac_total_num	NMDP_FN
+4946	units	TCGA_XML_Name
+4947	new_tumor_dx_prior_submitted_specimen_dx	TCGA_XML_Name
+4948	radiation_therapy_administered_preparation_technique_text	TCGA_XML_Name
+4949	year_of_last_known_alive	TCGA_XML_Name
+4950	egfr_amplication_status	TCGA_XML_Name
+4951	month_of_well_differentiated_liposarcoma_primary_dx	TCGA_XML_Name
+4952	chemotherapy_negation_radiation_therapy_concurrent_administered_text	TCGA_XML_Name
+4953	AMLF_DBR_kary_oth_ab_spec	NMDP_FN
+4954	PRIOR_CA_DX_IND_3	DCP Alt Name
+4955	SURG_PROC_NM	USED_BY
+4956	day_of_chemotherapy_start	TCGA_XML_Name
+4957	sensory_changes	TCGA_XML_Name
+4958	brachytherapy_method_other_specify_text	TCGA_XML_Name
+4959	pln_pos_light_micro	TCGA_XML_Name
+4960	RECURR_DZ_DX_DT	USED_BY
+4961	city_of_procurement	TCGA_XML_Name
+4962	ReferenceResult:value	HCT_BRIDG
+4963	month_of_sample_procurement	TCGA_XML_Name
+4964	PathRvwDt	COG GDE Short Name
+4965	month_of_radiation_therapy_start	TCGA_XML_Name
+4966	tumor_tissue_site_other	TCGA_XML_Name
+4967	OCCUP_PRIMARY_JOB	USED_BY
+4968	new_neoplasm_event_type	TCGA_XML_Name
+4969	leukemia_specimen_cell_source_type	TCGA_XML_Name
+4970	new_tumor_metastasis_anatomic_site_other_text	TCGA_XML_Name
+4971	antireflux_treatment_type	TCGA_XML_Name
+4972	mds_base_diag_oth_ab_spec	NMDP_FN
+4973	LYMpre_ASDG_lym_cyto_abn_type	NMDP_FN
+4974	pathologic_tumor_depth	TCGA_XML_Name
+4975	distant_metastasis_anatomic_site	TCGA_XML_Name
+4976	visual_changes	TCGA_XML_Name
+4977	lymphovascular_invasion_present	TCGA_XML_Name
+4978	MALNEO_PRM_SITE_SPEC	USED_BY
+4979	SURG_DT	C3D Name
+4980	year_of_chemotherapy_start	TCGA_XML_Name
+4981	additional_pharmaceutical_therapy	TCGA_XML_Name
+4982	diagnostic_mri_performed	TCGA_XML_Name
+4983	CLLP_LSDX_oth_ab_spec	NMDP_FN
+4984	cervical_carcinoma_corpus_uteri_involvement_indicator	TCGA_XML_Name
+4985	malignant_neoplasm_metastatic_involvement_site	TCGA_XML_Name
+4986	prep_rad_tb_ttl_num_fract	NMDP_FN
+4987	LAB_PLAT_RSLT_SP_VAL	USED_BY
+4988	day_of_performance_status_assessment	TCGA_XML_Name
+4989	fan_base_diag_othr_spec	NMDP_FN
+4990	immunophenotype_cytochemistry_testing_result	TCGA_XML_Name
+4991	her2_neu_breast_carcinoma_copy_analysis_input_total_number	TCGA_XML_Name
+4992	month_of_pancreatitis_onset	TCGA_XML_Name
+4993	breast_carcinoma_primary_surgical_procedure_name	TCGA_XML_Name
+4994	month_of_brachytherapy_end_occurrence	TCGA_XML_Name
+4995	cytokeratin_immunohistochemistry_staining_method_micrometastasis_indicator	TCGA_XML_Name
+4996	psa_result_preop	TCGA_XML_Name
+4997	melanoma_clark_level_value	TCGA_XML_Name
+4998	specimen_collection_method_name	TCGA_XML_Name
+4999	A_CH_P_REDS_ADM_IND	USED_BY
+5000	preoperative_corticosteroids	TCGA_XML_Name
+5001	recurrence_second_surgery_neoplasm_surgical_procedure_name_other	TCGA_XML_Name
+5002	year_of_consent	TCGA_XML_Name
+5003	therapeutic_procedure_new_neoplasm_required_additional_therapy_type	TCGA_XML_Name
+5004	year_of_drug_therapy_end	TCGA_XML_Name
+5005	total_dose	TCGA_XML_Name
+5006	metastatic_breast_carcinoma_immunohistochemistry_pr_pos_cell_score	TCGA_XML_Name
+5007	year_of_cancer_sample_procurement	TCGA_XML_Name
+5008	metastatic_breast_carcinoma_lab_proc_her2_neu_in_situ_hybridization_outcome_type	TCGA_XML_Name
+5009	LYMpre_astrn_kary_oth_ab_spec	NMDP_FN
+5010	colon_carcinoma_gene_loci_testing	HCMI Name
+5011	fish_evaluation_performed_ind	TCGA_XML_Name
+5012	histologic_disease_progression_present_text	TCGA_XML_Name
+5013	malignant_neoplasm_normal_contro	HCMI Name
+5014	ALLF_DTE_kar_oth_ab_spec	NMDP_FN
+5015	other_anatomic_site	TCGA_XML_Name
+5016	person_concomitant_prostate_carcinoma_occurrence_indicator	TCGA_XML_Name
+5017	BRAIN_TUM_HIST_NM	USED_BY
+5018	rt_pelvis_administered_total_dose	TCGA_XML_Name
+5019	food_allergy_history	TCGA_XML_Name
+5020	month_of_performance_status_assessment	TCGA_XML_Name
+5021	day_of_drug_therapy_start	TCGA_XML_Name
+5022	addl_tx_completion_success_outcome_type	TCGA_XML_Name
+5023	motor_movement_changes	TCGA_XML_Name
+5024	number_of_lymphnodes_positive_by_he	TCGA_XML_Name
+5025	new_tumor_event_additional_surgery_procedure	TCGA_XML_Name
+5026	day_of_radiation_therapy_start	TCGA_XML_Name
+5027	OTH_TUMOR_C_T_STG	COG GDE Short Name
+5028	number_cycles	TCGA_XML_Name
+5029	radiation_therapy_administered_dose_text	TCGA_XML_Name
+5030	SubstanceExtractionAdministrationRelationship:donorTypeCode	HCT_BRIDG
+5031	mononucleotide_and_dinucleotide_marker_panel_analysis_status	TCGA_XML_Name
+5032	digital_image_submitted	TCGA_XML_Name
+5033	day_of_diagnostic_mri_performed	TCGA_XML_Name
+5034	day_of_first_biochemical_recurrence	TCGA_XML_Name
+5035	eml4_alk_translocation_performed	TCGA_XML_Name
+5036	metastatic_neoplasm_confirmed_diagnosis_method_name	TCGA_XML_Name
+5037	residual_tumor	HCMI Name
+5038	KRASGnMutAbnAssIND	COG GDE Short Name
+5039	smokeless_tobacco_use_at_diag	TCGA_XML_Name
+5040	month_of_well_differentiated_liposarcoma_resection	TCGA_XML_Name
+5041	2534235v1.0:2957355v2.0	USED_BY
+5042	headache_history	TCGA_XML_Name
+5043	3133920v1.0:2182115v1.0	USED_BY
+5044	additional_drug_therapy	TCGA_XML_Name
+5045	adjuvant_postoperative_embolization_or_ablation_therapeutic_procedure_performed_indicator	TCGA_XML_Name
+5046	coex_dis_chromo_othr_spec	NMDP_FN
+5047	patient_history_immune_system_and_related_disorders_text	TCGA_XML_Name
+5048	year_of_well_differentiated_liposarcoma_resection	TCGA_XML_Name
+5049	percent_lymphocyte_infiltration	TCGA_XML_Name
+5050	sample_prescreened	TCGA_XML_Name
+5051	tumor_necrosis_percent	TCGA_XML_Name
+5052	month_of_psa	TCGA_XML_Name
+5053	PRIM_DZ_ANAT_SITE_NM	USED_BY
+5054	day_of_definitive_surgical_procedure_performed	TCGA_XML_Name
+5055	PT_ID	C3D Name
+5056	LOC_DZ_RECUR_IND-3	C3D Name
+5057	2715306v1.0:2787945v1.0	USED_BY
+5058	patient_gastroesophageal_reflux_disease_history	HCMI Name
+5059	diagnosis_subtype	TCGA_XML_Name
+5060	lost_follow_up	TCGA_XML_Name
+5061	ldh_norm_range_upper	TCGA_XML_Name
+5062	days_to_preop_psa	TCGA_XML_Name
+5063	interferon_90_day_prior_excision_admin_indicator	TCGA_XML_Name
+5064	other_method_of_normal_sample_procurement	TCGA_XML_Name
+5065	hormonal_therapy	TCGA_XML_Name
+5066	additional_surgery_metastatic_procedure	TCGA_XML_Name
+5067	disease_detection_molecular_analysis_method_type_other_text	TCGA_XML_Name
+5068	person_lifetime_risk_radiation_exposure_indicator	TCGA_XML_Name
+5069	malignant_neoplasm_mitotic_count_rate	TCGA_XML_Name
+5070	p53_gene_analysis	TCGA_XML_Name
+5071	TUMOR_SZ_CM_VAL	USED_BY
+5072	synchronous_colon_cancer_present	TCGA_XML_Name
+5073	neu_base_mets_oth_spec	NMDP_FN
+5074	PtConfLTFUThisRptPerio	COG GDE Short Name
+5075	day_of_consent	TCGA_XML_Name
+5076	TUMOR_MUL_DESC_IND-3	USED_BY
+5077	genotype_analysis_performed_indicator	TCGA_XML_Name
+5078	therapy_ongoing	TCGA_XML_Name
+5079	LOC_DZ_RECUR_IND-3	USED_BY
+5080	2961287v1.0:3426799v2.0	USED_BY
+5081	cells_counted_copy_number	HCMI Name
+5082	lymphnode_dissection_method_right	TCGA_XML_Name
+5083	pathologic_M	TCGA_XML_Name
+5084	pathologic_N	TCGA_XML_Name
+5085	LYMpre_lab_diag_ldh_uln_value	NMDP_FN
+5086	oligonucleotide_primer_pair_laboratory_procedure_performed_name	TCGA_XML_Name
+5087	lym_base_diag_ldh_up_limt	NMDP_FN
+5088	Metastatic site(s) at diagnosis	HCMI Name
+5089	chemical_exposure_text	TCGA_XML_Name
+5090	init_pathology_dx_method_other	TCGA_XML_Name
+5091	kras_mutation_codon	TCGA_XML_Name
+5092	histological_type_other	TCGA_XML_Name
+5093	metastatic_breast_carcinoma_estrogen_receptor_detection_method_text	TCGA_XML_Name
+5094	prep_rad_tl_ttl_num_fract	NMDP_FN
+5095	pathologic_T	TCGA_XML_Name
+5096	extrahepatic_recurrent_disease_anatomic_site_name	TCGA_XML_Name
+5097	relevant_infectious_disease_name	HCMI Name
+5098	number_of_abnormal_loci	HCMI Name
+5099	lab_procedure_bone_marrow_lymphocyte_outcome_percent_value	TCGA_XML_Name
+5100	egfr_mutation_result	TCGA_XML_Name
+5101	site_of_additional_surgery_new_tumor_event_mets	TCGA_XML_Name
+5102	participant_medical_history_Diabetes_Mellitus	HCMI Name
+5103	CMLP_LTHM_karyo_oth_ab_spec	NMDP_FN
+5104	TUMOR_PERN_INVAS_IND	USED_BY
+5105	mye_base_cyto_diag_oth_sp	NMDP_FN
+5106	3181371v1.0:3181381v1.0	USED_BY
+5107	molecular_analysis_abnormal_result_indicator	TCGA_XML_Name
+5108	pos_finding_progesterone_receptor_other_measurement_scale_text	TCGA_XML_Name
+5109	ALLF_DBR_kar_all_cyto_abn_type	NMDP_FN
+5110	ASBS_EXPO_IND-3	USED_BY
+5111	inherited_genetic_syndrome_found	TCGA_XML_Name
+5112	fab_category	TCGA_XML_Name
+5113	AMLF_DTE_kary_aml_cyto_abn_tp	NMDP_FN
+5114	progression_determined_by_notes	TCGA_XML_Name
+5115	AJCC_metastasis_stage_code	HCMI Name
+5116	pln_pos_ihc	TCGA_XML_Name
+5117	NecrosisSpc	COG GDE Short Name
+5118	anatomic_neoplasm_subdivision_other	TCGA_XML_Name
+5119	CMLP_LSDX_karyo_oth_ab_spec	NMDP_FN
+5120	NEW_MET_ANAT_OTX_TXT	SAE Rave Integration
+5121	hydroxyurea_administration_prior_registration_clinical_study_indicator	TCGA_XML_Name
+5122	gleason_score_secondary	TCGA_XML_Name
+5123	synchronous_cancer_present	HCMI Name
+5124	HER2_copy_number	HCMI Name
+5125	day_of_chemotherapy_end	TCGA_XML_Name
+5126	HER2_centromere_17_signal_ratio	HCMI Name
+5127	month_of_sample_procurement	HCMI Name
+5128	first_degree_relative_history_thyroid_gland_carcinoma_diagnosis_relationship_type	TCGA_XML_Name
+5129	radiation_treatment_ongoing	TCGA_XML_Name
+5130	tissue_prospective_collection_indicator	TCGA_XML_Name
+5131	TX_SINCE_LASTCNT_IND	C3D Name
+5132	molecular_analysis_abnormality_testing_percentage_value	TCGA_XML_Name
+5133	melanoma_ulceration_indicator	TCGA_XML_Name
+5134	lab_procedure_abnormal_lymphocyte_result_percent_value	TCGA_XML_Name
+5135	surgical_procedure_name_other_specify_text	TCGA_XML_Name
+5136	days_to_normal_sample_procurement	TCGA_XML_Name
+5137	metastatic_breast_carcinoma_estrogen_receptor_level_cell_percent_category	TCGA_XML_Name
+5138	TDIS_ALL_KARYB_all_cy_abn_type	NMDP_FN
+5139	pulmonary_function_test_performed	TCGA_XML_Name
+5140	cervical_neoplasm_pathologic_margin_involved_type	TCGA_XML_Name
+5141	MDSpre_therapy_multi_oth_ab_spec	NMDP_FN
+5142	START_DT	USED_BY
+5143	month_of_tumor_progression	TCGA_XML_Name
+5144	TDIS_ALL_FISHD_all_cy_abn_type	NMDP_FN
+5145	LYMpre_dsp_lym_cyto_abn_type	NMDP_FN
+5146	clinical_trail_drug_classification	TCGA_XML_Name
+5147	fluorescence_in_situ_hybridization_diagnostic_procedure_chromosome_17_signal_result_range	TCGA_XML_Name
+5148	new_tumor_additional_rad_tx	TCGA_XML_Name
+5149	PROG_SITE_TXT	USED_BY
+5150	AMLWHODsCl	COG GDE Short Name
+5151	month_of_diabetes_onset	TCGA_XML_Name
+5152	TDIS_AML_FISHL_oth_ab_spec	NMDP_FN
+5153	mitotic_count	TCGA_XML_Name
+5154	day_of_laboratory_procedure_tumor_marker_squamous_cell_carcinoma_antigen_result	TCGA_XML_Name
+5155	CMLP_LSLE_karyo_oth_ab_spec	NMDP_FN
+5156	history_of_neoadjuvant_treatment	TCGA_XML_Name
+5157	CR_TR_STD_BST_RSP_TP	USED_BY
+5158	human_papillomavirus_laboratory_procedure_performed_name	TCGA_XML_Name
+5159	CUM_AGT_TTL_DOSE	USED_BY
+5160	radiation_tx_indicator	TCGA_XML_Name
+5161	new_primary_melanoma_anatomic_site_other_text	TCGA_XML_Name
+5162	body_weight_kg	HCMI Name
+5163	lab_procedure_bone_marrow_basophil_result_percent_value	TCGA_XML_Name
+5164	AMLF_DTE_kary_oth_ab_spec	NMDP_FN
+5165	day_of_drug_therapy_start	HCMI Name
+5166	CellSource	NMDP_FN
+5167	TUMOR_PERN_INVAS_IND	C3D Name
+5168	eczema_history	TCGA_XML_Name
+5169	history_of_colon_polyps	TCGA_XML_Name
+5170	patient_pregnancy_spontaneous_abortion_count	TCGA_XML_Name
+5171	PerformedClinicalInterpretation:value	HCT_BRIDG
+5172	TX_TTL_CRSE_CT	USED_BY
+5173	primary_neoplasm_melanoma_dx	TCGA_XML_Name
+5174	TDIS_AML_FISHD_oth_ab_spec	NMDP_FN
+5175	ALLF_DLR_kar_oth_ab_spec	NMDP_FN
+5176	total_aor-lnp	TCGA_XML_Name
+5177	days_to_diabetes_onset	TCGA_XML_Name
+5178	month_of_liver_graft_together_new_neoplasm_performed	TCGA_XML_Name
+5179	history_of_chronic_pancreatitis	TCGA_XML_Name
+5180	days_to_consent	TCGA_XML_Name
+5181	maint_therapy_course_complete	TCGA_XML_Name
+5182	microsatellite_instability	TCGA_XML_Name
+5183	month_of_first_biochemical_recurrence	TCGA_XML_Name
+5184	ALLF_DTE_kar_all_cyto_abn_type	NMDP_FN
+5185	base_organ_func_prep_ldh_uln_value	NMDP_FN
+5186	year_of_radiation_therapy_start	TCGA_XML_Name
+5187	chemotherapy_regimen_type	TCGA_XML_Name
+5188	HT_INCH_NUM	USED_BY
+5189	CYTO_PER_RESULT_TP	USED_BY
+5190	normal_control_type	TCGA_XML_Name
+5191	LYMpre_dsp_kary_oth_ab_spec	NMDP_FN
+5192	clinical_M	TCGA_XML_Name
+5193	PCDpre_lab_diag_ldh_uln_value	NMDP_FN
+5194	clinical_N	TCGA_XML_Name
+5195	BRAF_gene_analysis_result	HCMI Name
+5196	adenocarcinoma_invasion	TCGA_XML_Name
+5197	ETHNIC_CATEGORIES	C3D Name
+5198	LYMpre_therapy_multi_rad_frac_total_num	NMDP_FN
+5199	2632128v1.0:2784450v1.0	USED_BY
+5200	number_of_lymphnodes_positive	TCGA_XML_Name
+5201	primary_thyroid_gland_neoplasm_location_anatomic_site	TCGA_XML_Name
+5202	adjuvant_rad_therapy_prior_admin	TCGA_XML_Name
+5203	new_neoplasm_event_post_initial_therapy_diagnosis_method_type	TCGA_XML_Name
+5204	lymph_node_location_positive_pathology_text	TCGA_XML_Name
+5205	CONS_DT	C3D Name
+5206	SpcLaterality	COG GDE Short Name
+5207	white_cell_count_result	TCGA_XML_Name
+5208	AMLpre_lab_diag_oth_ab_spec	NMDP_FN
+5209	clinical_T	TCGA_XML_Name
+5210	reason_path_confirm_diagnosis_not_matching	TCGA_XML_Name
+5211	percent_stromal_cells	TCGA_XML_Name
+5212	melanoma_origin_skin_anatomic_site	TCGA_XML_Name
+5213	MACpre_lab_prep_oth_ab_spec	NMDP_FN
+5214	lab_procedure_bone_marrow_myelocyte_result_percent_value	TCGA_XML_Name
+5215	first_presenting_symptom_longest_duration	TCGA_XML_Name
+5216	hay_fever_history	TCGA_XML_Name
+5217	year_of_diabetes_onset	TCGA_XML_Name
+5218	HER2NEU_17_SGNL_VAL	USED_BY
+5219	SerumCreatinineNumeric	COG GDE Short Name
+5220	LAST_CONTACT_DT	USED_BY
+5221	loss_gene_expression_mismatch_protein_immunohistochemistry_indicator	HCMI Name
+5222	diagnostic_ct_abd_pelvis_result	TCGA_XML_Name
+5223	LAB_WBC_RSL_U_VAL	USED_BY
+5224	PreTed_prime_dis_hct_mye_oth_ab_spec	NMDP_FN
+5225	PET_DXIMG_ASS_STAT	USED_BY
+5226	3440198v1.0:3440295v1.0	USED_BY
+5227	HTN_HX_IND3	USED_BY
+5228	lymphovascular_invasion_indicator	TCGA_XML_Name
+5229	radiation_therapy	TCGA_XML_Name
+5230	lab_procedure_bone_marrow_neutrophil_result_percent_value	TCGA_XML_Name
+5231	all_base_prep_oth_ab_spec	NMDP_FN
+5232	year_of_third_biochemical_recurrence	TCGA_XML_Name
+5233	year_of_performance_status_follow_up_score	TCGA_XML_Name
+5234	SPEC_LATERALITY	C3D Name
+5235	LAB_HGB_RSL_SP_VAL	USED_BY
+5236	centromere_17_copy_number	HCMI Name
+5237	2011365v5.0:3151957v1.0	USED_BY
+5238	i_131_subsequent_administered_dose	TCGA_XML_Name
+5239	CC	USED_BY
+5240	month_of_initial_score_performance_status_scale	TCGA_XML_Name
+5241	LYMpre_thrpym_rad_frac_ttl_num	NMDP_FN
+5242	3233641v1.0:2017113v4.0	USED_BY
+5243	histologic_disease_progression_present_type	TCGA_XML_Name
+5244	PRIOR_CA_DX_IND-3	USED_BY
+5245	AMLF_DLR_kary_oth_ab_spec	NMDP_FN
+5246	year_of_psa	TCGA_XML_Name
+5247	month_of_radiation_therapy_end	TCGA_XML_Name
+5248	day_of_third_biochemical_recurrence	TCGA_XML_Name
+5249	other_malignancy_anatomic_site	TCGA_XML_Name
+5250	bc_base_diag_fish_perf_yn	NMDP_FN
+5251	2724670v1.0:3130363v1.0	USED_BY
+5252	loss_expression_of_mismatch_repair_proteins_by_ihc	TCGA_XML_Name
+5253	Preoperative_carcinoembryonic_antigen_result	HCMI Name
+5254	MET_REC_PROG_SUR_IND	USED_BY
+5255	day_of_preop_psa	TCGA_XML_Name
+5256	CA_INIT_DX_DT	USED_BY
+5257	SURG_DT	USED_BY
+5258	hpv_status_by_ish_testing	TCGA_XML_Name
+5259	additional_chemo_therapy	TCGA_XML_Name
+5260	PARTIC_ENROL_DT	USED_BY
+5261	bcr_patient_barcode	TCGA_XML_Name
+5262	SurgTisDx	COG GDE Short Name
+5263	TDIS_MDS_dx_oth_ab_spec	NMDP_FN
+5264	metastatic_breast_carcinoma_her2_neu_chromosone_17_signal_ratio_value	TCGA_XML_Name
+5265	lymph_node_preoperative_scan_indicator	TCGA_XML_Name
+5266	BAR_ESOPH_DX_IND	C3D Name
+5267	laboratory_procedure_total_bilirubin_result_upper_limit_normal_value	TCGA_XML_Name
+5268	key_ted_ethnicity	NMDP_FN
+5269	new_primary_melanoma_anatomic_site	TCGA_XML_Name
+5270	primary_therapy_outcome_success	TCGA_XML_Name
+5271	ALLF_DTE_fsh_oth_ab_spec	NMDP_FN
+5272	cll_base_prep_abnm_oth_sp	NMDP_FN
+5273	FISH_test_component_percentage_value	TCGA_XML_Name
+5274	circumferential_resection_margin	TCGA_XML_Name
+5275	well_differentiated_liposarcoma_primary_dx	TCGA_XML_Name
+5276	preoperative_antiseizure_meds	TCGA_XML_Name
+5277	ALLF_DBR_kar_oth_ab_spec	NMDP_FN
+5278	Person:ethnicGroupCode	HCT_BRIDG
+5279	inherited_genetic_syndrome_result	TCGA_XML_Name
+5280	TDIS_ALL_KARYD_all_cy_abn_type	NMDP_FN
+5281	TDIS_AML_KARYB_aml_cy_abn_type	NMDP_FN
+5282	antireflux_treatment	TCGA_XML_Name
+5283	PCDpre_lab_prep_oth_ab_spec	NMDP_FN
+5284	TDIS_AML_FISHL_aml_cy_abn_type	NMDP_FN
+5285	L_PULM_FUNC_ASS_IND	USED_BY
+5286	LA_LDH_RSL_ULN_VAL	USED_BY
+5287	discontiguous_lesion_count	TCGA_XML_Name
+5288	PT_LOST_FU_IND-2	USED_BY
+5289	AMLF_DLR_fish_aml_cyto_abn_tp	NMDP_FN
+5290	SURGEON_NAME	USED_BY
+5291	prior_systemic_therapy_type	TCGA_XML_Name
+5292	year_of_chemotherapy_end	TCGA_XML_Name
+5293	chemo_therapy	TCGA_XML_Name
+5294	month_of_definitive_surgical_procedure_performed	TCGA_XML_Name
+5295	new_neoplasm_occurrence_anatomic_site	HCMI Name
+5296	GLEASON_PRM_PATT_VAL	USED_BY
+5297	PCDpre_lab_prep_fish_oth_ab_spec	NMDP_FN
+5298	LIVEBIRTH_NUM	C3D Name
+5299	SlidePrepTp	COG GDE Short Name
+5300	ADD_RT_REC_IND	USED_BY
+5301	pharmaceutical_therapy_start_subtract_initial_pathologic_diagnosis_time_duration	HCMI Name
+5302	pathologic_tumor_burden	TCGA_XML_Name
+5303	month_of_submitted_specimen_dx	TCGA_XML_Name
+5304	number_of_abnormal_loci	TCGA_XML_Name
+5305	ALLpost_best_resp_stat_e_oth_ab_spec	NMDP_FN
+5306	PGR_DETECT_MTHD_TXT	C3D Name
+5307	lab_procedure_platelet_result_specified_value	TCGA_XML_Name
+5308	C_SMOK_H_P_YR_AMT	USED_BY
+5309	metastatic_breast_carcinoma_her2_erbb_pos_finding_cell_percent_category	TCGA_XML_Name
+5310	days_to_sample_procurement	TCGA_XML_Name
+5311	day_of_sample_procurement	HCMI Name
+5312	method_of_sample_procurement	TCGA_XML_Name
+5313	eml4_alk_translocation_result	HCMI Name
+5314	her2_neu_and_centromere_17_copy_number_metastatic_breast_carcinoma_analysis_input_total_number_count	TCGA_XML_Name
+5315	ALLF_DLR_fsh_all_cyto_abn_type	NMDP_FN
+5316	lab_procedure_bone_marrow_cellularity_outcome_percent_value	TCGA_XML_Name
+5317	BR_PRM_SX_PRO_PER_TP	USED_BY
+5318	SPEC_ID_NUM	USED_BY
+5319	HER2_IHC_assessment	HCMI Name
+5320	AJCC_lymph_node_stage_code	HCMI Name
+5321	aml_base_prep_oth_ab_spec	NMDP_FN
+5322	metastatic_breast_carcinoma_fluorescence_in_situ_hybridization_diagnostic_proc_centromere_17_signal_result_range	TCGA_XML_Name
+5323	month_of_normal_sample_procurement	TCGA_XML_Name
+5324	year_of_sample_procurement	HCMI Name
+5325	genotyping_results_gene_mutation_not_reported_reason	TCGA_XML_Name
+5326	3440200v1.0:3440297v1.0	USED_BY
+5327	clinical_diagnosis_year	HCMI Name
+5328	egfr_mutation_performed	TCGA_XML_Name
+5329	HER2_FISH_CISH_gene_expression	HCMI Name
+5330	person_history_nonmedical_leukemia_causing_agent_type	TCGA_XML_Name
+5331	TX_INTENT_TXT_NM	USED_BY
+5332	pos_finding_her2_erbb2_other_measurement_scale_text	TCGA_XML_Name
+5333	breast_cancer_surgery_margin_status	TCGA_XML_Name
+5334	PerformedDiagnosis:value	HCT_BRIDG
+5335	lab_procedure_bone_marrow_lab_eosinophil_result_percent_value	TCGA_XML_Name
+5336	neu_post_rad_number_fract	NMDP_FN
+5337	2925063v1.0:2925064v1.0	USED_BY
+5338	diagnosis	TCGA_XML_Name
+5339	asthma_history	TCGA_XML_Name
+5340	3440202v1.0:3440306v1.0	USED_BY
+5341	LclDsRcrIND	COG GDE Short Name
+5342	ncedna_dna_qm	TCGA_XML_Name
+5343	LYMpost_therapy_surgery_yn	NMDP_FN
+5344	SITE_LCTN_DESC	C3D Name
+5345	year_of_well_differentiated_liposarcoma_primary_dx	TCGA_XML_Name
+5346	ACCESS_RTE_TXT_CD	USED_BY
+5347	TDIS_AML_KARYB_oth_ab_spec	NMDP_FN
+5348	DEATH_DT	USED_BY
+5349	aml_world_health_organization	TCGA_XML_Name
+5350	nodal_anatomic_site	TCGA_XML_Name
+5351	LYMpre_astrn_lym_cyto_abn_ty	NMDP_FN
+5352	vascular_tumor_cell_invasion_type	TCGA_XML_Name
+5353	ALLpost_best_resp_stat_all_cyto_abn_type	NMDP_FN
+5354	breast_neoplasm_other_surgical_procedure_descriptive_text	TCGA_XML_Name
+5355	disease_first_symptom	HCMI Name
+5356	pathologic_tumor_width	TCGA_XML_Name
+5357	diagnostic_mri_result	TCGA_XML_Name
+5358	percent_monocyte_infiltration	TCGA_XML_Name
+5359	mye_base_cyto_prep_oth_sp	NMDP_FN
+5360	measure_of_response	TCGA_XML_Name
+5361	kras_mutation_result	TCGA_XML_Name
+5362	tumor_perineural_invasion	HCMI Name
+5363	FISH_EVAL_PERF_IND-3	USED_BY
+5364	month_of_fdg_or_ct_pet_performed	TCGA_XML_Name
+5365	total_number_of_pregnancies	TCGA_XML_Name
+5366	2178448v1.0:2178409v1.0	USED_BY
+5367	axillary_lymph_node_stage_method_type	TCGA_XML_Name
+5368	Oth_Imsp_Tpy_Spf_Txt	COG GDE Short Name
+5369	keratinizing_squamous_cell_carcinoma_present_indicator	TCGA_XML_Name
+5370	antireflux_treatment	HCMI Name
+5371	disease_detection_molecular_analysis_method_type	TCGA_XML_Name
+5372	number_of_lymphnodes_positive_by_ihc	TCGA_XML_Name
+5373	ncedna_dna_qty	TCGA_XML_Name
+5374	her2_immunohistochemistry_level_result	TCGA_XML_Name
+5375	HEIGHT_IN	C3D Name
+5376	primary_anatomic_site_count	TCGA_XML_Name
+5377	metastatic_breast_carcinoma_pos_finding_her2_erbb2_other_measure_scale_text	TCGA_XML_Name
+5378	FIGOStg	COG GDE Short Name
+5379	numfractions	TCGA_XML_Name
+5380	new_neoplasm_occurrence_anatomic_site_text	TCGA_XML_Name
+5381	extrathyroid_carcinoma_present_extension_status	TCGA_XML_Name
+5382	person_occupation_years_number	TCGA_XML_Name
+5383	site_of_tumor_first_recurrence	TCGA_XML_Name
+5384	PreTed_pre_hct_prep_rad_frac_total_num	NMDP_FN
+5385	day_of_brachytherapy_end_occurrence	TCGA_XML_Name
+5386	radiation_type	TCGA_XML_Name
+5387	SURG_PROC_O_SPEC_TXT	USED_BY
+5388	metastatic_breast_carcinoma_estrogen_receptor_status	TCGA_XML_Name
+5389	new_tumor_additional_rx_tx	TCGA_XML_Name
+5390	immunohistochemistry_positive_cell_score	TCGA_XML_Name
+5391	TUMOR_MUL_DESC_IND3	C3D Name
+5392	t_cell_tumor_slide_submitted	TCGA_XML_Name
+5393	MEL_MAL_NEO_PRM_SITE	USED_BY
+5394	external_beam_radiation_therapy_administered_status	TCGA_XML_Name
+5395	day_of_drug_therapy_end	TCGA_XML_Name
+5396	pathologic_tumor_length	TCGA_XML_Name
+5397	neu_base_rad_tx_num_frac	NMDP_FN
+5398	metastatic_breast_carcinoma_immunohistochemistry_er_pos_cell_score	TCGA_XML_Name
+5399	other_diagnosis	TCGA_XML_Name
+5400	fluorescence_in_situ_hybridization_abnormal_result_indicator	TCGA_XML_Name
+5401	other_malignancy_histological_type	TCGA_XML_Name
+5402	bc_base_diag_her2_neu_lvl	NMDP_FN
+5403	relative_cancer_type	TCGA_XML_Name
+5404	ADJ_POST_CHEMO_IND	USED_BY
+5405	LYMpre_thrpym_surgery_yn	NMDP_FN
+5406	TDIS_ALL_FISHD_oth_ab_spec	NMDP_FN
+5407	day_of_bone_scan_performed	TCGA_XML_Name
+5408	day_of_tumor_progression	TCGA_XML_Name
+5409	prior_tamoxifen_administered_usage_category	TCGA_XML_Name
+5410	DERIV_PRSN_AGE_VAL	USED_BY
+5411	month_of_consent	TCGA_XML_Name
+5412	CLLP_LTHM_surgery_yn	NMDP_FN
+5413	aml_base_diag_oth_ab_spec	NMDP_FN
+5414	AMLF_DLR_oth_ab_spec	NMDP_FN
+5415	bladder_carcinoma_extracapsular_extension_status	TCGA_XML_Name
+5416	KRAS_gene_analysis	HCMI Name
+5417	residual_tumor	TCGA_XML_Name
+5418	vessel_used	TCGA_XML_Name
+5419	laboratory_procedure_albumin_result_specified_value	TCGA_XML_Name
+5420	MALNE_MET_INV_TXT_NM	USED_BY
+5421	percent_tumor_cells	TCGA_XML_Name
+5422	RT_ADM_DOSE_UOM	C3D Name
+5423	anatomic_treatment_site	TCGA_XML_Name
+5424	primary_tumor_lower_uterus_segment	TCGA_XML_Name
+5425	disease_after_curative_tx	TCGA_XML_Name
+5426	TDIS_ALL_FISHL_oth_ab_spec	NMDP_FN
+5427	bc_base_diag_mets_yn	NMDP_FN
+5428	chemotherapy_regimen	HCMI Name
+5429	LN_EXM_CT	USED_BY
+5430	prep_rad_ta_ttl_num_fract	NMDP_FN
+5431	ncedna_dna_conc	TCGA_XML_Name
+5432	barretts_esophagus	TCGA_XML_Name
+5433	days_to_well_differentiated_liposarcoma_resection	TCGA_XML_Name
+5434	method_of_curative_tx	TCGA_XML_Name
+5435	year_of_preop_psa	TCGA_XML_Name
+5436	new_tumor_metastasis_anatomic_site	TCGA_XML_Name
+5437	year_of_drug_therapy_start	HCMI Name
+5438	TDIS_ALL_oth_ab_spec	NMDP_FN
+5439	lab_procedure_bone_marrow_blast_cell_outcome_percent_value	TCGA_XML_Name
+5440	LAST_CONTACT_DT	C3D Name
+5441	day_of_diabetes_onset	TCGA_XML_Name
+5442	HPST_CGHD_pulm_func_test_yn	NMDP_FN
+5443	TISS_SUBSITE_LCTN_NM	C3D Name
+5444	LYMpre_ASDG_karyo_oth_ab_spec	NMDP_FN
+5445	lymph_node_examined_count	TCGA_XML_Name
+5446	frozen_specimen_anatomic_site	TCGA_XML_Name
+5447	ALLF_DLR_kar_all_cyto_abn_type	NMDP_FN
+5448	patient_pregnancy_therapeutic_abortion_count	TCGA_XML_Name
+5449	month_of_completion_of_curative_tx	TCGA_XML_Name
+5450	SMPL_PROC_METH_NM	C3D Name
+5451	PREG_LIVEBIRTH_CT	USED_BY
+5452	clinical_stage	TCGA_XML_Name
+5453	percent_normal_cells	TCGA_XML_Name
+5454	recurrence_second_surgery_neoplasm_surgical_procedure_name	TCGA_XML_Name
+5455	external_beam_radiation_therapy_administered_paraaortic_region_lymph_node_dose	TCGA_XML_Name
+5456	primary_tumor_multiple_present_ind	TCGA_XML_Name
+5457	year_of_performance_status_assessment	TCGA_XML_Name
+5458	TDIS_ALL_FISHL_all_cy_abn_type	NMDP_FN
+9016	AGT_NM	C3D Name
+5459	lab_procedure_leukocyte_result_unspecified_value	TCGA_XML_Name
+5460	LAB_CR_RSLT_SP_VAL	USED_BY
+5461	tumor_tissue_identifier	HCMI Name
+5462	LYMpre_therapy_multi_surgery_yn	NMDP_FN
+5463	HDNCK_TUMOR_HIST_GD	USED_BY
+5464	PER_BIR_DT	USED_BY
+5465	ldh1_mutation_test_method	TCGA_XML_Name
+5466	month_of_chemotherapy_end	TCGA_XML_Name
+5467	ICF_SIG_DT	COG GDE Short Name
+5468	day_of_initial_score_performance_status_scale	TCGA_XML_Name
+5469	other_anatomic_site_normal_tissue	TCGA_XML_Name
+5470	regimen_number	TCGA_XML_Name
+5471	mutation_abnormality_status_KRAS_gene	HCMI Name
+5472	ALN_ST_METH_TP	USED_BY
+5473	cll_base_tx_surgery_yn	NMDP_FN
+5474	seizure_history	TCGA_XML_Name
+5475	NwTmrEvtMetAntmcSt	COG GDE Short Name
+5476	IcfSigDt	COG GDE Short Name
+5477	2012407v3.0:3065860v1.0	USED_BY
+5478	PerformedSubstanceAdministration:periodProductDoseTotal	HCT_BRIDG
+5479	hepatocellular_carcinoma_risk_factor_specify	TCGA_XML_Name
+5480	country_of_birth	TCGA_XML_Name
+5481	TargetAnatomicSite:code	HCT_BRIDG
+5482	metastatic_breast_carcinoma_immunohistochemistry_er_positive_finding_scale_type	TCGA_XML_Name
+5483	LAB_BM_BL_OC_PTG_VAL	USED_BY
+5484	CMLF_PHPI_karyo_oth_ab_spec	NMDP_FN
+5485	laboratory_procedure_tumor_marker_squamous_cell_carcinoma_antigen_result_value	TCGA_XML_Name
+7273	AuthorEMailAddress	NMDP_FN
+7274	CLLF_AUTH_LastName	NMDP_FN
+7275	ALLpost_dis_stat_author_LastName	NMDP_FN
+7276	RITNfup_author_LasttName	NMDP_FN
+7277	Software Version(s)	DICOM Attribute Name
+7278	prep_reg_weight_uom	NMDP_FN
+7279	YR_DT	USED_BY
+7280	LabUOM	COG GDE Short Name
+7281	CLLP_AUTH_LastName	NMDP_FN
+7282	SOP Class UID	DICOM Attribute Name
+7283	MACpost_dis_stat_author_email	NMDP_FN
+7284	ALLF_auth_email	NMDP_FN
+7285	MACpost_dis_stat_author_FirstName	NMDP_FN
+7286	MDSpost_dis_stat_author_LastName	NMDP_FN
+7287	LANSKY_PERF_STAT_SC	USED_BY
+7288	hla_option_antigen_FirstName	NMDP_FN
+7289	CRIDInd_author_FirstName	NMDP_FN
+7290	ADDRESS_COUNTRY_NM	USED_BY
+7291	DIE_PER_ASS_INT_SCAL	USED_BY
+7292	PERS_BSA_VAL	USED_BY
+7293	RITNcntct_author_email	NMDP_FN
+7294	death_author_LastName	NMDP_FN
+7295	CLLF_AUTH_FirstName	NMDP_FN
+7296	PREG_FS_LastName	NMDP_FN
+7297	RITNcntct_prnt_grd_email	NMDP_FN
+7298	CMSME_AUTH_LastName	NMDP_FN
+7299	HLHpost_assess_author_LastName	NMDP_FN
+7300	race	GDC_Name
+7301	HPST_AUTH_FirstName	NMDP_FN
+7302	TDIS_AUTH_email	NMDP_FN
+7303	AMLpre_dis_stat_prep_author_email	NMDP_FN
+7304	PCDpost_amy_stat_author_LastName	NMDP_FN
+7305	PREG_FS_FirstName	NMDP_FN
+7306	2715244v1.0:2787943v1.0	USED_BY
+7307	AMLF_AUTH_LastName	NMDP_FN
+7308	MDSpre_dis_assess_prep_author_FirstName	NMDP_FN
+7309	SNFE_AUTH_FirstName	NMDP_FN
+7310	PerformedClinicalResult:value	HCT_BRIDG
+7311	GVHDsup_corticosteroids_author_FirstName	NMDP_FN
+7312	ADDR_POSTAL_CD	C3D Name
+7313	ADDR_STRT_NUM	C3D Name
+7314	PCDpre_amy_org_inv_prep_NY_heart_association_class	NMDP_FN
+7315	LYMpost_auth_FirstName	NMDP_FN
+7316	DT	USED_BY
+7317	PreTed_AUTH_FirstName	NMDP_FN
+7318	RITNfup_author_FirstName	NMDP_FN
+7319	XLPpost_lab_eval_author_FirstName	NMDP_FN
+7320	idm_infect_dis_mark_author_LastName	NMDP_FN
+7321	ALLpre_dis_stat_prep_LastName	NMDP_FN
+7322	LYMpost_dis_stat_author_FirstName	NMDP_FN
+7323	AMLP_AUTH_LastName	NMDP_FN
+7324	CPST_AUTH_email	NMDP_FN
+7325	RITNbase_author_FirstName	NMDP_FN
+7326	ADDR_CITY_NM	USED_BY
+7327	AMLP_AUTH_FirstName	NMDP_FN
+7328	idm_infect_dis_mark_author_FirstName	NMDP_FN
+7329	RITNcntct_prnt_grd_LastName	NMDP_FN
+7330	TDIS_AUTH_LastName	NMDP_FN
+7331	PERSON_MIDDLE_NM	USED_BY
+7332	ALLP_auth_FirstName	NMDP_FN
+7333	auth_first_name	NMDP_FN
+7334	Study Date	DICOM Attribute Name
+7335	CPRE_AUTH_FirstName	NMDP_FN
+7336	LYMpre_auth_FirstName	NMDP_FN
+7337	CMSMP_AUTH_FirstName	NMDP_FN
+7338	HLHpost_assess_author_FirstName	NMDP_FN
+7339	SNFM_AUTH_LastName	NMDP_FN
+7340	CMLP_AUTH_email	NMDP_FN
+7341	key_email_address	NMDP_FN
+7342	inf_donor_infant_demo_email	NMDP_FN
+7343	NM_AUTH_email	NMDP_FN
+7344	IMAG_KV_PK_NUM	C3D Name
+7345	XLPpre_dis_stat_prep_author_FirstName	NMDP_FN
+7346	RITNbase_author_email	NMDP_FN
+7347	PreTed_prime_dis_hct_author_FirstName	NMDP_FN
+7348	CPRE_FS_AUTH_LastName	NMDP_FN
+7349	Acquisition Date	DICOM Attribute Name
+7350	PRSN_EDU_LVL_SUM_TP	USED_BY
+7351	ALLP_auth_LastName	NMDP_FN
+7352	CMLP_AUTH_FirstName	NMDP_FN
+7353	PREG_FS_email	NMDP_FN
+7354	CTI_AUTH_FirstName	NMDP_FN
+7355	prep_reg_height_uom	NMDP_FN
+7356	TELEPHONE_NUM	C3D Name
+7358	inf_donor_infant_demo_LastName	NMDP_FN
+7359	XLPpost_lab_eval_author_email	NMDP_FN
+7360	ADDR_CTRY_NM	USED_BY
+7361	CRIDAssgn_demo_LastName	NMDP_FN
+7362	CRIDInd_author_email	NMDP_FN
+7363	ALLpre_dis_stat_prep_author_email	NMDP_FN
+7364	PCDpost_amy_stat_author_FirstName	NMDP_FN
+7365	SPE_PER_ASS_COM_SCAL	USED_BY
+7366	LANSKY_PERF_STAT_SC	C3D Name
+7367	XLPpost_lab_eval_author_LastName	NMDP_FN
+7368	ZUBROD01	NRDS Alternate Name
+7369	CTI_AUTH_LastName	NMDP_FN
+7370	AMLpost_dis_stat_author_email	NMDP_FN
+7371	hla_option_antigen_LastName	NMDP_FN
+7372	JMMLpre_dis_stat_prep_author_LastName	NMDP_FN
+7373	MDSpre_dis_assess_prep_author_email	NMDP_FN
+7374	CTP_AUTH_FirstName	NMDP_FN
+7375	AuthorFirstName	NMDP_FN
+7376	base_socioec_author_FirstName	NMDP_FN
+7377	HLHpre_clin_feat_lab_prep_author_email	NMDP_FN
+7378	CMSR_AUTH_FirstName	NMDP_FN
+7379	CRIDAssgn_demo_FirstName	NMDP_FN
+7380	CMLP_AUTH_LastName	NMDP_FN
+7381	MON_DT	USED_BY
+7382	CRIDAssgn_demo_SSN	NMDP_FN
+7383	Station Name	DICOM Attribute Name
+7384	auth_last_name	NMDP_FN
+7385	RELG_AUTH_LastName	NMDP_FN
+7386	LYMpre_auth_LastName	NMDP_FN
+7387	Series Instance UID	DICOM Attribute Name
+7388	CMSMF_AUTH_LastName	NMDP_FN
+7389	VOD_AUTH_FirstName	NMDP_FN
+7390	CRIDAssgn_author_FirstName	NMDP_FN
+7391	PDDpre_dis_stat_prep_author_FirstName	NMDP_FN
+7392	RITNfup_author_email	NMDP_FN
+7393	HPST_AUTH_email	NMDP_FN
+7394	PreTed_AUTH_LastName	NMDP_FN
+7395	LastName	NMDP_FN
+7396	Training	USED_BY
+7397	HLHpre_clin_feat_lab_prep_author_FirstName	NMDP_FN
+7398	ADDR_STRT_NM	C3D Name
+7399	LYMpost_auth_email	NMDP_FN
+7400	ethnicity	GDC_Name
+7401	PreTed_AUTH_email	NMDP_FN
+7402	ADDR_POSTAL_CD	USED_BY
+7403	BiologicEntityIdentifier:identifier	HCT_BRIDG
+7404	TPST_AUTH_LastName	NMDP_FN
+7405	JMMLpost_dis_stat_author_LastName	NMDP_FN
+7406	JMMLpre_dis_stat_prep_author_FirstName	NMDP_FN
+7407	AMLpre_dis_stat_prep_author_LastName	NMDP_FN
+7408	idm_infect_dis_mark_author_email	NMDP_FN
+7409	CLLP_AUTH_email	NMDP_FN
+7410	PST_CD	C3D Name
+7411	PDDpre_dis_stat_prep_author_email	NMDP_FN
+7412	PCDpre_dis_stat_prep_author_firstname	NMDP_FN
+7413	CMSR_AUTH_LastName	NMDP_FN
+7414	StudySitePersonnel:telecomAddress	HCT_BRIDG
+7415	ALLpost_dis_stat_author_email	NMDP_FN
+7416	CPRE_FS_AUTH_FirstName	NMDP_FN
+7417	LYMpre_dis_assess_prep_author_LastName	NMDP_FN
+7418	PCDpre_dis_stat_prep_author_email	NMDP_FN
+7419	PDDpre_dis_stat_prep_author_LastName	NMDP_FN
+7420	ZIPCD	NRDS Alternate Name
+7421	PCDpre_amy_org_inv_diag_NY_heart_assoc_class	NMDP_FN
+7422	RITNcntct_alt_mult_addr_street	NMDP_FN
+7423	CPST_AUTH_LastName	NMDP_FN
+7424	CRIDAssgn_author_LastName	NMDP_FN
+7425	SCD_AUTH_FirstName	NMDP_FN
+7426	PCDpre_dis_stat_prep_author_lastname	NMDP_FN
+7427	DAY_DT	USED_BY
+7428	DIE_PER_ASS_LCT_SCAL	USED_BY
+7429	CGRPNAM	NRDS Alternate Name
+7430	Device Serial Number	DICOM Attribute Name
+7431	PDDpost_dis_stat_author_LastName	NMDP_FN
+7432	MACpre_dis_stat_prep_author_FirstName	NMDP_FN
+7433	ONC SDC Project	USED_BY
+7434	RITNcntct_author_LastName	NMDP_FN
+7435	ZUBRODPS	C3D Name
+7436	PRSN_EMAIL_ADDR_TXT	USED_BY
+7437	CMSMF_AUTH_email	NMDP_FN
+7438	ALLF_auth_FirstName	NMDP_FN
+7439	AMLP_AUTH_email	NMDP_FN
+7440	JMMLpost_dis_stat_author_email	NMDP_FN
+7441	base_socioec_author_LastName	NMDP_FN
+7442	PCDpost_amy_stat_author_email	NMDP_FN
+7443	LYMpost_dis_stat_author_LastName	NMDP_FN
+7444	TEST	USED_BY
+7445	Slice Location	DICOM Attribute Name
+7446	SOP Instance UID	DICOM Attribute Name
+7447	CMSME_AUTH_email	NMDP_FN
+7448	JMMLpre_dis_stat_prep_author_email	NMDP_FN
+7449	CMSR_AUTH_email	NMDP_FN
+7450	RITNcntct_alt_multi_FirstName	NMDP_FN
+7451	PDDpost_dis_stat_author_FirstName	NMDP_FN
+7452	EQUIP_MANU_MODEL_NM_TXT	USED_BY
+7453	LYMpre_dis_assess_prep_author_email	NMDP_FN
+7454	HPST_AUTH_LastName	NMDP_FN
+7455	RELG_AUTH_email	NMDP_FN
+7456	SNFE_AUTH_LastName	NMDP_FN
+7457	Manufacturer	DICOM Attribute Name
+7458	kVp	DICOM Attribute Name
+7459	SCD_AUTH_LastName	NMDP_FN
+7460	Slice Thickness	DICOM Attribute Name
+7461	ALLpost_dis_stat_author_FirstName	NMDP_FN
+7462	Study Time	DICOM Attribute Name
+7463	ALLpost_DSTE_FirstName	NMDP_FN
+7464	MDSpre_dis_assess_prep_author_LastName	NMDP_FN
+7465	RITNcntct_alt_multi_LastName	NMDP_FN
+7466	CMLF_AUTH_LastName	NMDP_FN
+7467	CPRE_AUTH_email	NMDP_FN
+7468	CMSME_AUTH_FirstName	NMDP_FN
+7469	MACpost_dis_stat_author_LastName	NMDP_FN
+7470	GVHDsup_corticosteroids_author_email	NMDP_FN
+7471	SCD_AUTH_email	NMDP_FN
+7472	PERF_ZUBROD	C3D Name
+7473	LYMpost_auth_LastName	NMDP_FN
+7474	TDIS_AUTH_FirstName	NMDP_FN
+7475	CTP_AUTH_LastName	NMDP_FN
+7476	JMMLpost_dis_stat_author_FirstName	NMDP_FN
+7477	CLLP_AUTH_FirstName	NMDP_FN
+7478	GVHDsup_corticosteroids_author_LastName	NMDP_FN
+7479	ALLP_auth_email	NMDP_FN
+7480	Content (formerly Image) Time	DICOM Attribute Name
+7481	LYMpost_dis_stat_author_email	NMDP_FN
+7482	SNFM_AUTH_email	NMDP_FN
+7483	NM_AUTH_FirstName	NMDP_FN
+7484	SNFM_AUTH_FirstName	NMDP_FN
+7485	ZUBROD_PERF_STAT_SC	USED_BY
+7486	ALLF_auth_LastName	NMDP_FN
+7487	ALLpost_DSTE_email	NMDP_FN
+7488	CRIDAssgn_author_email	NMDP_FN
+7489	RITNcntct_patient_addr_state	NMDP_FN
+7490	RITNbase_author_LastName	NMDP_FN
+7491	PRSN_SLF_REP_AGE_VAL	DCP Alt Name
+7492	PRSN_WT_UOM_UCUM_CD	USED_BY
+7493	VOD_AUTH_email	NMDP_FN
+7494	inf_donor_infant_demo_FirstName	NMDP_FN
+7495	ALLpost_DSTE_LastName	NMDP_FN
+7496	LYMpre_auth_email	NMDP_FN
+7497	PRSN_MARST_CAT	USED_BY
+7498	Modality	DICOM Attribute Name
+7499	PERSON_FIRST_NM	USED_BY
+7500	AMLpost_dis_stat_author_FirstName	NMDP_FN
+7501	PreTed_prime_dis_hct_author_LastName	NMDP_FN
+7502	RITNcntct_prnt_grd_addr_street	NMDP_FN
+7503	ORG_NAME	USED_BY
+7504	SSN	NMDP_FN
+7505	death_author_FirstName	NMDP_FN
+7506	Content Date	DICOM Attribute Name
+7507	VOD_AUTH_LastName	NMDP_FN
+7508	AMLF_AUTH_email	NMDP_FN
+7509	RITNcntct_author_FirstName	NMDP_FN
+7510	AuthorLastName	NMDP_FN
+7511	MDSpost_dis_stat_author_FirstName	NMDP_FN
+7512	CAR_PER_ASS_FUN_SCAL	USED_BY
+7513	CRIDInd_author_LastName	NMDP_FN
+7514	HLHpre_clin_feat_lab_prep_author_LastName	NMDP_FN
+7515	AMLpost_dis_stat_author_LastName	NMDP_FN
+7516	Image Laterality	DICOM Attribute Name
+7517	RITNcntct_patient_email	NMDP_FN
+7518	XLPpre_dis_stat_prep_author_LastName	NMDP_FN
+7519	INOT_AUTH_LastName	NMDP_FN
+7520	Acquisition Time	DICOM Attribute Name
+7521	RITNcntct_patient_FirstName	NMDP_FN
+7522	RITNcntct_patient_addr_street	NMDP_FN
+7523	CTI_AUTH_email	NMDP_FN
+7524	hla_option_email	NMDP_FN
+7525	CTP_AUTH_email	NMDP_FN
+7526	Person:Name	HCT_BRIDG
+7527	RITNcntct_prnt_grd_FirstName	NMDP_FN
+7528	PerformedDiagnosis:diseaseStatusCode	HCT_BRIDG
+7529	PRSN_REP_AGE_VAL	USED_BY
+7530	CPST_AUTH_FirstName	NMDP_FN
+7531	XLPpre_dis_stat_prep_author_email	NMDP_FN
+7532	base_socioec_author_email	NMDP_FN
+7533	RITNcntct_prnt_grd_addr_state	NMDP_FN
+7534	TPST_AUTH_email	NMDP_FN
+7535	death_author_email	NMDP_FN
+7536	FirstName	NMDP_FN
+7537	CMSMP_AUTH_LastName	NMDP_FN
+7538	CPRE_AUTH_LastName	NMDP_FN
+7539	RITNcntct_alt_multi_addr_state	NMDP_FN
+7540	MACpre_dis_stat_prep_author_LastName	NMDP_FN
+7541	LYMpre_dis_assess_prep_author_FirstName	NMDP_FN
+7542	MDSpost_dis_stat_author_email	NMDP_FN
+7543	INOT_AUTH_FirstName	NMDP_FN
+7544	PDDpost_dis_stat_author_email	NMDP_FN
+7545	PRSN_HT_UOM_UCUM_CD	USED_BY
+7546	Study Instance UID	DICOM Attribute Name
+7547	NM_AUTH_LastName	NMDP_FN
+7548	MACpre_dis_stat_prep_author_email	NMDP_FN
+7549	PERSON_FAMILY_NM	USED_BY
+7550	CMLF_AUTH_email	NMDP_FN
+7551	TPST_AUTH_FirstName	NMDP_FN
+7552	BirthState	NMDP_FN
+7553	SNFE_AUTH_email	NMDP_FN
+7554	RITNcntct_patient_LastName	NMDP_FN
+7555	PreTed_prime_dis_hct_author_email	NMDP_FN
+7556	auth_email	NMDP_FN
+7557	ADDR_STATE_NM	C3D Name
+7558	Manufacturer's Model Name	DICOM Attribute Name
+7559	ADDR_CITY_NM	C3D Name
+7560	RITNcntct_alt_multi_email	NMDP_FN
+7561	Person:postalAddress	HCT_BRIDG
+7562	ADDR_STATE_NM	USED_BY
+7563	CMSMF_AUTH_FirstName	NMDP_FN
+7564	RELG_AUTH_FirstName	NMDP_FN
+7565	BSA	C3D Name
+7566	AMLpre_dis_stat_prep_author_FirstName	NMDP_FN
+7567	HLHpost_assess_author_email	NMDP_FN
+7568	AMLF_AUTH_FirstName	NMDP_FN
+7569	ALLpre_dis_stat_prep_FirstName	NMDP_FN
+7570	CPRE_FS_AUTH_email	NMDP_FN
+7571	CMSMP_AUTH_email	NMDP_FN
+7572	INOT_AUTH_email	NMDP_FN
+8238	gastric_esophageal_junction_involvement	GDC_Name
+8239	spectrophotometer_method	GDC_Name
+8240	loci_abnormal_count	GDC_Name
+8241	percent_necrosis	HCMI Name
+8242	normal_tumor_genotype_snp_match	GDC_Name
+8243	loci_count	GDC_Name
+8244	ishak_fibrosis_score	HCMI Name
+9010	CTC_AE_GD	COG GDE Short Name
+9011	DS_ST_EV_CR_RP_PD_IN	USED_BY
+9012	CRSE_START_DT	NRDS Alternate Name
+9013	OTX_DATE	USED_BY
+9014	SMPL_COLLCT_DT	C3D Name
+9017	OFF_TX_RSN_SPEC	USED_BY
+9018	OTX_CD	USED_BY
+9019	EVAL_NOTDON_RSN_SPEC	USED_BY
+9020	AGT_LOT_ID_NUM	USED_BY
+9021	OFF_STUDY_RSN_TXT	USED_BY
+9022	IMAGE_COMP_IND	USED_BY
+9023	PT_ELIG_IND-3	USED_BY
+9024	CsntWdrwDt	COG GDE Short Name
+9025	TGT_NONTGT_IDN_TXT	USED_BY
+9026	NEO_MORPH_OTH_SPEC_TXT	USED_BY
+9027	PART_VITAL_STAT_TP	USED_BY
+9028	3165842v1.0:3506068v1.0	USED_BY
+9029	metastatic_disease_anatomic_location	HCMI Name
+9030	PtWdrwCsnt	COG GDE Short Name
+9031	CLIN_TRL_SCREEN_IND	USED_BY
+9032	EVAL_DT	C3D Name
+9033	2680991v1.0:2624019v1.0	USED_BY
+9034	OFF_STDY_DT	C3D Name
+9035	OFF_STUDY_DT	USED_BY
+9036	AE_SEV_GD	USED_BY
+9037	INTVN_END_DT	USED_BY
+9038	Radionuclide Total Dose	DICOM Attribute Name
+9039	REG_DT	C3D Name
+9040	LESION_NUM	C3D Name
+9041	radiation_type_notes	TCGA_XML_Name
+9042	RT_ADMIN_TP	USED_BY
+9043	radiation_therapy_administered	HCMI Name
+9044	LES_NUM	USED_BY
+9045	EVAL_DT	USED_BY
+9046	RpnsDszEval	COG GDE Short Name
+9047	OTX_STUDY_FU_CD	USED_BY
+9048	Ctcae4Gd	COG GDE Short Name
+9049	RT_TX_TP_O_SPEC	USED_BY
+9050	PET_ISOTOP_OTH_SPEC	USED_BY
+9051	AGT_ADM_DT	USED_BY
+9052	PT_ELIG_IND	C3D Name
+9053	INTVN_BEG_DT	USED_BY
+9054	PT_REL_MED_HIST_DT	USED_BY
+9055	Pixel Measures Sequence	DICOM Attribute Name
+9056	3521326v1.0:3506068v1.0	USED_BY
+9057	AGT_NAME	USED_BY
+9058	3521320v1.0:3506068v1.0	USED_BY
+9059	SMPL_COLL_DT	USED_BY
+9060	TUMOR_SITE_LCTN_NM	USED_BY
+9061	RT_MODA_TP	USED_BY
+9062	3009016v1.0:3009019v1.0	USED_BY
+9063	OTX_STUDY_FU_RSN	USED_BY
+9064	3165842v1.0:3165844v1.0	USED_BY
+9065	PT_WD_CONSENT_DT	USED_BY
+9066	anatomic_location_site	HCMI Name
+9067	CURRENT_DZ_P_DX_DT	USED_BY
+9068	SpcSiteIcdoT	COG GDE Short Name
+9069	AGT_ADM_TP	USED_BY
+9070	AE_VERBATIM_TRM_TXT	USED_BY
+9071	PT_REG_DT	USED_BY
+9119	condition_start_date	OMOP Name
+9120	measurement_source_value	OMOP Name
+9121	place_of_service_concept_id	OMOP Name
+9122	RAW_NORMAL_RANGE_LOW	ACT Name
+9123	RxATime	Sentinel Name
+9124	PX	PCORNet Name
+9125	RAW_RESULT	ACT Name
+9126	LAB_ORDER_DATE	PCORNet Name
+9127	WT	Sentinel Name
+9128	PRO_TIME	PCORNet Name
+9129	ADMIT_DATE	ACT Name
+9130	TDate_End	Sentinel Name
+9131	Zip	Sentinel Name
+9132	device_type_concept_id	OMOP Name
+9133	observation_date	OMOP Name
+9134	anatomic_site_concept_id	OMOP Name
+9135	OBSCLIN_CODE	PCORNet Name
+9136	unique_device_id	OMOP Name
+9137	OBSGEN_RESULT_TEXT	PCORNet Name
+9138	LAB_ CODING_SYSTEM	ACT Name
+9139	RX_DOSE_ORDERED	PCORNet Name
+9140	specimen_id	OMOP Name
+9141	RESULT_LOCATION	ACT Name
+9142	drug_exposure_id	OMOP Name
+9143	days_supply	OMOP Name
+9144	value_as_concept_id	OMOP Name
+9145	observation_type_concept_id	OMOP Name
+9146	Result_Loc	Sentinel Name
+9147	ethnicity_concept_id	OMOP Name
+9148	condition_status_concept_id	OMOP Name
+9149	OBSCLINID	PCORNet Name
+9150	Medication.MEDICATION_ CLASSIFICATION_SYSTEM_VERSION	ACT Name
+9151	Stat	Sentinel Name
+9152	PX_CodeType	Sentinel Name
+9153	TransID	Sentinel Name
+9154	verbatim_end_date	OMOP Name
+9155	dea	OMOP Name
+9156	OrigPX	Sentinel Name
+9157	RAW_MODIFIER_LOW	ACT Name
+9158	DEATH_CAUSE_TYPE	PCORNet Name
+9159	Birth_Date	Sentinel Name
+9160	RxID	Sentinel Name
+9161	visit_occurrence_id	OMOP Name
+9162	death_type_concept_id	OMOP Name
+9163	OBSGEN_RESULT_QUAL	PCORNet Name
+9164	Position	Sentinel Name
+9165	DISCHARGE_DISPOSITION	PCORNet Name
+9166	quantity	OMOP Name
+9167	MEDADMIN_STOP_TIME	PCORNet Name
+9168	drug_exposure_end_date	PCORNet Name
+9169	DISPENSE_DOSE_DISP	PCORNet Name
+9170	Discharge_ Disposition	Sentinel Name
+9171	PRO_CAT	PCORNet Name
+9172	MEASURE_TIME	PCORNet Name
+9173	SPECIMEN_SOURCE	PCORNet Name
+9174	CONDITION_SOURCE	PCORNet Name
+9175	OBSGEN_TYPE	PCORNet Name
+9176	note_date	OMOP Name
+9177	CONDITION_STATUS	PCORNet Name
+9178	DEATH_DATE	PCORNet Name
+9179	DISPENSINGID	PCORNet Name
+9180	PRO_MEASURE_SCORE	PCORNet Name
+9181	OBSGEN_RESULT_UNIT	PCORNet Name
+9182	birth_datetime	OMOP Name
+9183	RACE	PCORNet Name
+9184	SPECIMEN_TIME	PCORNet Name
+9185	REPORT_DATE	PCORNet Name
+9186	DX_SOURCE	PCORNet Name
+9187	RESULT_DATE	PCORNet Name
+9188	care_site_name	OMOP Name
+9189	Orig_Result_unit	Sentinel Name
+9190	LAB_RESULT_CM_ID	PCORNet Name
+9191	range_high	OMOP Name
+9192	RESULT_NUM	PCORNet Name
+9193	DISPENSE_DATE	PCORNet Name
+9194	PRIORITY	PCORNet Name
+9195	RESULT_SNOMED	PCORNet Name
+9196	MS_Result_N	Sentinel Name
+9197	DtImpute	Sentinel Name
+9198	TOBACCO	PCORNet Name
+9199	MS_Result_C	Sentinel Name
+9200	RX_ORDER_DATE	PCORNet Name
+9201	observation_concept_id	OMOP Name
+9202	drug_exposure_start_datetime	OMOP Name
+9203	DX_POA	PCORNet Name
+9204	Tobacco_Type	Sentinel Name
+9205	PROCEDURE_CODE	ACT Name
+9206	LAB_CODING_SYSTEM_VERSION	ACT Name
+9207	PRO_MEASURE_COUNT_SCORED	PCORNet Name
+9208	PRO_ITEM_TEXT	PCORNet Name
+9209	specimen_type_concept_id	OMOP Name
+9210	DISCHARGE_STATUS	PCORNet Name
+9211	RESULT_LOC	PCORNet Name
+9212	operator_concept_id	OMOP Name
+9213	range_low	OMOP Name
+9214	Abn_ind	Sentinel Name
+9215	NDC	PCORNet Name
+9216	RxSup	Sentinel Name
+9217	Medication.MEDICATION_ CLASSIFICATION_SYSTEM	ACT Name
+9218	RX_DAYS_SUPPLY	PCORNet Name
+9219	ADMITTING_SOURCE	PCORNet Name
+9220	RAW_UNIT	ACT Name
+9221	Modifier_low	Sentinel Name
+9222	DEATH_DATE_IMPUTE	PCORNet Name
+9223	RX_REFILLS	PCORNet Name
+9224	RX_PROVIDERID	PCORNet Name
+9225	DRG	PCORNet Name
+9226	Dx_Codetype	Sentinel Name
+9227	DEATH_CAUSE	PCORNet Name
+9228	OBSGEN_TIME	PCORNet Name
+9229	RAW_LAB_CODE	ACT Name
+9230	discharge_to_concept_id	OMOP Name
+9231	PROVIDER_SEX	PCORNet Name
+9232	NORM_RANGE_HIGH	PCORNet Name
+9233	OBSCLIN_RESULT_MODIFIER	PCORNet Name
+9234	CONDITIONID	PCORNet Name
+9235	procedure_concept_id	OMOP Name
+9236	visit_end_datetime	OMOP Name
+9237	procedure_datetime	OMOP Name
+9238	OBSCLIN_RESULT_QUAL	PCORNet Name
+9239	ENR_BASIS	PCORNet Name
+9240	DIAGNOSIS_PRIORITY	ACT Name
+9241	birth_date	ACT Name
+9242	HT	PCORNet Name
+9243	DIAGNOSIS_SOURCE	ACT Name
+9244	DISPENSE_AMT	PCORNet Name
+9245	RESULT_QUALITATIVE	ACT Name
+9246	CONDITION_TYPE	PCORNet Name
+9247	MEDADMIN_DOSE_ADMIN	PCORNet Name
+9248	TTime_Start	Sentinel Name
+9249	Modifier	Sentinel Name
+9250	PRO_RESPONSE_TEXT	PCORNet Name
+9251	BloodType	Sentinel Name
+9252	cause_concept_id	OMOP Name
+9253	device_exposure_start_datetime	OMOP Name
+9254	DEATH_CAUSE_CONFIDENCE	PCORNet Name
+9255	Confidence	Sentinel Name
+9256	BIRTH_TIME	PCORNet Name
+9257	OBSCLIN_PROVIDERID	PCORNet Name
+9258	Result_tm	Sentinel Name
+9259	PATID	PCORNet Name
+9260	ENR_START_DATE	PCORNet Name
+9261	LOCAL_CD	Sentinel Name
+9262	RESULT_MODIFIER	PCORNet Name
+9263	OBSCLIN_RESULT_UNIT	PCORNet Name
+9264	Measure_Time	Sentinel Name
+9265	Medication.MEDICATION_CODE	ACT Name
+9266	provider_name	OMOP Name
+9267	PRO_MODE	PCORNet Name
+9268	MEDADMIN_STOP_DATE	PCORNet Name
+9269	location_id	OMOP Name
+9270	DIASTOLIC	PCORNet Name
+9271	OBSCLIN_RESULT_SNOMED	PCORNet Name
+9272	refills	OMOP Name
+9273	PRO_MEASURE_SEQ	PCORNet Name
+9274	DISCHARGE_DATE	PCORNet Name
+9275	OBSGEN_RESULT_MODIFIER	PCORNet Name
+9276	Sex	Sentinel Name
+9277	MEDICATION_CODE	ACT Name
+9278	Order_dt	Sentinel Name
+9279	PK_CodeType	Sentinel Name
+9280	Enr_Start	Sentinel Name
+9281	PRO_ITEM_FULLNAME	PCORNet Name
+9282	RxAmt	Sentinel Name
+9283	HISPANIC	ACT Name
+9284	EncounterID	Sentinel Name
+9285	BP_POSITION	PCORNet Name
+9286	admitting_source_concept_id	OMOP Name
+9287	Diastolic	Sentinel Name
+9288	stop_reason	OMOP Name
+9289	LAB_PX	PCORNet Name
+9290	MEDADMIN_DOSE_ADMIN_UNIT	PCORNet Name
+9291	DISPENSE_SUP	PCORNet Name
+9292	unit_concept_id	OMOP Name
+9293	MEDADMIN_CODE	PCORNet Name
+9294	RX_QUANTITY	PCORNet Name
+9295	DIAGNOSISID	PCORNet Name
+9296	RxUOM	Sentinel Name
+9297	drug_exposure_start_date	OMOP Name
+9298	sex	ACT Name
+9299	DX	PCORNet Name
+9300	OBSGEN_DATE	PCORNet Name
+9301	TDate_Start	Sentinel Name
+9302	measurement_id	OMOP Name
+9303	Ddate	Sentinel Name
+9304	PRO_MEASURE_STANDARD_ERROR	PCORNet Name
+9305	RESULT_TIME	PCORNet Name
+9306	DIAGNOSIS_CODE	ACT Name
+9307	NORM_RANGE_LOW	PCORNet Name
+9308	VITALID	PCORNet Name
+9309	PatID	Sentinel Name
+9310	PRO_MEASURE_NAME	PCORNet Name
+9311	period_type_concept_id	OMOP Name
+9312	PROCEDURESID	PCORNet Name
+9313	DX_TYPE	PCORNet Name
+9314	DISPENSE_ROUTE	PCORNet Name
+9315	RACE	ACT Name
+9316	SMOKING	PCORNet Name
+9317	PPX	PCORNet Name
+9318	sig	OMOP Name
+9319	OrigDX	Sentinel Name
+9320	DEATH_SOURCE	PCORNet Name
+9321	year_of_birth	OMOP Name
+9322	TOBACCO_TYPE	PCORNet Name
+9323	Vital_status	ACT Name
+9324	DIAGNOSIS_CODING_SYSTEM	ACT Name
+9325	FACILITY_TYPE	PCORNet Name
+9326	ENCOUNTERID	PCORNet Name
+9327	PRO_RESPONSE_NUM	PCORNet Name
+9328	visit_start_datetime	OMOP Name
+9329	device_concept_id	OMOP Name
+9330	CauseType	Sentinel Name
+9331	BP_Type	Sentinel Name
+9332	LAB_CODE	ACT Name
+9333	OBSCLIN_RESULT_TEXT	PCORNet Name
+9334	visit_type_concept_id	OMOP Name
+9335	OBSGEN_PROVIDERID	PCORNet Name
+9336	DX	Sentinel Name
+9337	procedure_type_concept_id	OMOP Name
+9338	RX_ORDER_TIME	PCORNet Name
+9339	Lab_dt	Sentinel Name
+9340	Systolic	Sentinel Name
+9341	RX_FREQUENCY	PCORNet Name
+9342	SYSTOLIC	PCORNet Name
+9343	Death_date	ACT Name
+9344	LAB_PX_TYPE	PCORNet Name
+9345	person_id	OMOP Name
+9346	HISPANIC	PCORNet Name
+9347	RX_DOSE_FORM	PCORNet Name
+9348	TransCode_Type	Sentinel Name
+9349	BIRTH_DATE	PCORNet Name
+9350	RAW_LAB_NAME	PCORNet Name
+9351	observation_period_start_date	OMOP Name
+9352	note_id	OMOP Name
+9353	PAdmit	Sentinel Name
+9354	RESULT_QUAL	PCORNet Name
+9355	condition_end_datetime	OMOP Name
+9356	Medication.MEDICATION_CODING_SYSTEM_VERSION	ACT Name
+9357	PRESCRIBINGID	PCORNet Name
+9358	PRO_MEASURE_SCALED_TSCORE	PCORNet Name
+9359	CodeType	Sentinel Name
+9360	observation_id	OMOP Name
+9361	Norm_Range_low	Sentinel Name
+9362	measurement_type_concept_id	OMOP Name
+9363	DISCHARGE_TIME	PCORNet Name
+9364	DEATH_CAUSE_SOURCE	PCORNet Name
+9365	OBSGEN_RESULT_NUM	PCORNet Name
+9366	condition_occurrence_id	OMOP Name
+9367	Modifier_high	Sentinel Name
+9368	value_as_string	OMOP Name
+9369	Measure_Date	Sentinel Name
+9370	ABN_IND	PCORNet Name
+9371	ADate	Sentinel Name
+9372	Result_Type	Sentinel Name
+9373	PROCEDURE_CODING_SYSTEM_VERSION	ACT Name
+9374	condition_start_datetime	OMOP Name
+9375	measurement_date	OMOP Name
+9376	drug_source_value	OMOP Name
+9377	specimen_datetime	OMOP Name
+9378	DISPENSE_DOSE_DISP_UNIT	PCORNet Name
+9379	Source	Sentinel Name
+9380	PRO_ITEM_NAME	PCORNet Name
+9381	NDC	Sentinel Name
+9382	HT	Sentinel Name
+9383	OBSCLIN_DATE	PCORNet Name
+9384	PRO_MEASURE_FULLNAME	PCORNet Name
+9385	EncType	Sentinel Name
+9386	RESULT_UNIT	PCORNet Name
+9387	RESULT_UNIT	ACT Name
+9388	COD	Sentinel Name
+9389	LAB_NAME	PCORNet Name
+9390	RxDose	Sentinel Name
+9391	PROVIDER_NPI	PCORNet Name
+9392	Enr_End	Sentinel Name
+9393	NORM_MODIFIER_LOW	PCORNet Name
+9394	DIAGNOSIS_CODING_SYSTEM_VERSION	ACT Name
+9395	Discharge_Status	Sentinel Name
+9396	MEDADMIN_START_DATE	PCORNet Name
+9397	Admitting_Source	Sentinel Name
+9398	MEDADMIN_PROVIDERID	PCORNet Name
+9399	LAB_ CLASSIFICATION_SYSTEM	ACT Name
+9400	LAB_ CLASSIFICATION _SYSTEM_VERSION	ACT Name
+9401	DRG_Type	Sentinel Name
+9402	TTime_End	Sentinel Name
+9403	RAW_MODIFIER_HIGH	ACT Name
+9404	drug_type_concept_id	OMOP Name
+9405	PROVIDER_SPECIALTY_PRIMARY	PCORNet Name
+9406	DISCHARGE_DATE	ACT Name
+9407	FACILITY_LOCATION	PCORNet Name
+9408	day_of_birth	OMOP Name
+9409	RxRoute	Sentinel Name
+9410	CONDITION	PCORNet Name
+9411	condition_concept_id	OMOP Name
+9412	note_type_concept_id	OMOP Name
+9413	MS_Result_unit	Sentinel Name
+9414	specialty_concept_id	OMOP Name
+9415	MEDADMIN_TYPE	PCORNet Name
+9416	specimen_concept_id	OMOP Name
+9417	drug_exposure_end_datetime	OMOP Name
+9418	PROCEDURE_ CODING_SYSTEM	ACT Name
+9419	DX_ORIGIN	PCORNet Name
+9420	specimen_date	OMOP Name
+9421	PRO_METHOD	PCORNet Name
+9422	RAW_PANEL	ACT Name
+9423	ORDER_DATE	ACT Name
+9424	OBSCLIN_TYPE	PCORNet Name
+9425	OBSGENID	PCORNet Name
+9426	RX_ROUTE	PCORNet Name
+9427	DeathDt	Sentinel Name
+9428	device_exposure_id	OMOP Name
+9429	ENR_END_DATE	PCORNet Name
+9430	note_class_concept_id	OMOP Name
+9431	RAW_MEDICATION_ROUTE	ACT Name
+9432	Zip_Date	Sentinel Name
+9433	RESULT_MODIFIER	ACT Name
+9434	condition_type_concept_id	OMOP Name
+9435	PROCEDURE_DATE	ACT Name
+9436	value_as_number	OMOP Name
+9437	Medication.MEDICATION_ CODING_SYSTEM	ACT Name
+9438	PDX	Sentinel Name
+9439	route_concept_id	OMOP Name
+9440	Result_dt	Sentinel Name
+9441	OBSCLIN_TIME	PCORNet Name
+9442	visit_start_date	OMOP Name
+9443	care_site_id	OMOP Name
+9444	Specimen_Source	Sentinel Name
+9445	MS_Test_Sub_ Category	Sentinel Name
+9446	disease_status_concept_id	OMOP Name
+9447	PRO_CM_ID	PCORNet Name
+9448	NORM_MODIFIER_HIGH	PCORNet Name
+9449	RxADate	Sentinel Name
+9450	Pt_Loc	Sentinel Name
+9451	ENC_TYPE	PCORNet Name
+9452	qualifier_concept_id	OMOP Name
+9453	RESULT_NUMERICAL	ACT Name
+9454	MEDADMINID	PCORNet Name
+9455	MEASURE_DATE	PCORNet Name
+9456	device_exposure_end_datetime	OMOP Name
+9457	ADMIT_TIME	PCORNet Name
+9458	condition_end_date	OMOP Name
+9459	PRO_ITEM_LOINC	PCORNet Name
+9460	gender_concept_id	OMOP Name
+9461	DEATH_MATCH_CONFIDENCE	PCORNet Name
+9462	RAW_NORMAL_RANGE_HIGH	ACT Name
+9463	VITAL_SOURCE	PCORNet Name
+9464	Hispanic	Sentinel Name
+9465	MS_Test_Name	Sentinel Name
+9466	procedure_date	OMOP Name
+9467	death_datetime	OMOP Name
+9468	VISIT_TYPE	ACT Name
+9469	ONSET_DATE	PCORNet Name
+9470	note_datetime	OMOP Name
+9471	Facility_Code	Sentinel Name
+9472	RX_START_DATE	PCORNet Name
+9473	DRG_TYPE	PCORNet Name
+9474	Facility_Location	Sentinel Name
+9475	race_source_value	OMOP Name
+9476	SPECIMEN_DATE	ACT Name
+9477	PRO_DATE	PCORNet Name
+9478	Route	ACT Name
+9479	measurement_concept_id	OMOP Name
+9480	note_title	OMOP Name
+9481	PX_TYPE	PCORNet Name
+9482	PK	Sentinel Name
+9483	observation_datetime	OMOP Name
+9484	PX	Sentinel Name
+9485	DEM:RACE	ACT Name
+9486	PDX	PCORNet Name
+9487	OBSCLIN_RESULT_NUM	PCORNet Name
+9488	DEATH_CAUSE_CODE	PCORNet Name
+9489	BATTERY_CD	Sentinel Name
+9490	DRG	Sentinel Name
+9491	RAW_RESULT	PCORNet Name
+9492	Std_Result_unit	Sentinel Name
+9493	lot_number	OMOP Name
+9494	RX_DOSE_ORDERED_UNIT	PCORNet Name
+9495	visit_concept_id	OMOP Name
+9496	SPECIMEN_DATE	PCORNet Name
+9497	PRO_MEASURE_THETA	PCORNet Name
+9498	Medication.ORDER_TYPE	ACT Name
+9499	ORIGINAL_BMI	PCORNet Name
+9500	RX_END_DATE	PCORNet Name
+9501	ABNORMAL_RESULT_INDICATOR	ACT Name
+9502	RXNORM_CUI	PCORNet Name
+9503	Orig_TransProd	Sentinel Name
+9504	MEDADMIN_START_TIME	PCORNet Name
+9505	ADMIT_DATE	PCORNet Name
+9506	observation_period_end_date	OMOP Name
+9507	Provider	Sentinel Name
+9508	Race	Sentinel Name
+9509	month_of_birth	OMOP Name
+9510	death_date	OMOP Name
+9511	procedure_occurrence_id	OMOP Name
+9512	SEXUAL_ORIENTATION	PCORNet Name
+9513	Tobacco	Sentinel Name
+9514	TransCode	Sentinel Name
+9515	Fast_Ind	Sentinel Name
+9516	note_text	OMOP Name
+9517	PRO_MEASURE_LOINC	PCORNet Name
+9518	LAB_LOINC	PCORNet Name
+9519	Lab_tm	Sentinel Name
+9520	Orig_Result	Sentinel Name
+9521	FACILITYID	PCORNet Name
+9522	MEDADMIN_ROUTE	PCORNet Name
+9523	npi	OMOP Name
+9524	RESOLVE_DATE	PCORNet Name
+9525	measurement_datetime	OMOP Name
+9526	visit_end_date	OMOP Name
+9527	OBSGEN_CODE	PCORNet Name
+9528	SEX	PCORNet Name
+9529	PROVIDERID	PCORNet Name
+9530	WT	PCORNet Name
+9531	provider_id	OMOP Name
+9532	PRO_TYPE	PCORNet Name
+9533	DIAGNOSIS_DATE	ACT Name
+9534	RxDate	Sentinel Name
+9535	drug_concept_id	OMOP Name
+9536	observation_period_id	OMOP Name
+9537	Norm_Range_high	Sentinel Name
+9538	device_exposure_start_date	OMOP Name
+9539	PX_DATE	PCORNet Name
+9540	PX_SOURCE	PCORNet Name
+9541	device_exposure_end_date	OMOP Name
+9542	LOINC	Sentinel Name
+12056	prep_rad_tl_dose_per_frac	NMDP_FN
+12057	CANCER_PRIOR_TX_IND	COG GDE Short Name
+12058	RT_FIELD_NM	C3D Name
+12059	prep_rad_tb_dose_per_frac	NMDP_FN
+12060	TX_COURSE_ADMIN_CT	USED_BY
+12061	prep_rad_ta_dose_per_frac	NMDP_FN
+12062	base_pre_HCT_prep_rad_frac_dose_value	NMDP_FN
+12063	PRM_SX_PRIO_PERF_TXT	USED_BY
+12064	PerformedSubstanceAdministration:productDose	HCT_BRIDG
+12065	neu_post_rad_dose_fract	NMDP_FN
+12066	RT_TX_TP	USED_BY
+12067	LYMpre_thrpym_rad_frac_dos_val	NMDP_FN
+12068	EXTRESECTTYPE	USED_BY
+12069	CA_PRIOR_TX_IND-3	USED_BY
+12070	DX_DEATH_MOS_NUM	C3D Name
+12071	LYMpre_therapy_multi_rad_frac_dose_value	NMDP_FN
+12072	TX_CURRENT_CRSE_NUM	USED_BY
+12073	BIOC_PROG_PRES_IND-3	USED_BY
+12074	FU_CNT_DT	C3D Name
+12075	CA_PRIOR_TX_IND3	USED_BY
+12076	PerformedSubstanceAdministration:approachAnatomicSiteCode	HCT_BRIDG
+12077	FU_CNT_DT	USED_BY
+\.
+
+
+--
+-- TOC entry 2569 (class 0 OID 67191)
+-- Dependencies: 226
+-- Data for Name: alt_names_de_external_defs; Type: TABLE DATA; Schema: public; Owner: scdev
+--
+
+COPY public.alt_names_de_external_defs (de_external_def_id, alt_name_id) FROM stdin;
+\.
+
+
+--
+-- TOC entry 2621 (class 0 OID 0)
+-- Dependencies: 224
+-- Name: alt_names_id_seq; Type: SEQUENCE SET; Schema: public; Owner: scdev
+--
+
+SELECT pg_catalog.setval('public.alt_names_id_seq', 1, false);
+
+
+--
+-- TOC entry 2571 (class 0 OID 67198)
+-- Dependencies: 228
+-- Data for Name: alternative_question_texts; Type: TABLE DATA; Schema: public; Owner: scdev
+--
+
+COPY public.alternative_question_texts (id, question_text, de_external_def_id) FROM stdin;
+\.
+
+
+--
+-- TOC entry 2622 (class 0 OID 0)
+-- Dependencies: 227
+-- Name: alternative_question_texts_id_seq; Type: SEQUENCE SET; Schema: public; Owner: scdev
+--
+
+SELECT pg_catalog.setval('public.alternative_question_texts_id_seq', 1, false);
+
+
+--
+-- TOC entry 2528 (class 0 OID 16426)
+-- Dependencies: 185
+-- Data for Name: ar_internal_metadata; Type: TABLE DATA; Schema: public; Owner: scdev
+--
+
+COPY public.ar_internal_metadata (key, value, created_at, updated_at) FROM stdin;
+environment	development	2018-03-05 19:00:32.352976	2018-03-05 19:00:32.352976
+\.
+
+
+--
+-- TOC entry 2537 (class 0 OID 16510)
+-- Dependencies: 194
+-- Data for Name: carts; Type: TABLE DATA; Schema: public; Owner: scdev
+--
+
+COPY public.carts (id, user_id, created_at, updated_at) FROM stdin;
+\.
+
+
+--
+-- TOC entry 2623 (class 0 OID 0)
+-- Dependencies: 193
+-- Name: carts_id_seq; Type: SEQUENCE SET; Schema: public; Owner: scdev
+--
+
+SELECT pg_catalog.setval('public.carts_id_seq', 4, true);
+
+
+--
+-- TOC entry 2582 (class 0 OID 77420)
+-- Dependencies: 239
+-- Data for Name: cde_loaders; Type: TABLE DATA; Schema: public; Owner: scdev
+--
+
+COPY public.cde_loaders (id, name, description, file, type, source, collection_id, user_id, created_at, updated_at, file_url) FROM stdin;
+\.
+
+
+--
+-- TOC entry 2624 (class 0 OID 0)
+-- Dependencies: 238
+-- Name: cde_loaders_id_seq; Type: SEQUENCE SET; Schema: public; Owner: scdev
+--
+
+SELECT pg_catalog.setval('public.cde_loaders_id_seq', 7, true);
+
+
+--
+-- TOC entry 2573 (class 0 OID 68171)
+-- Dependencies: 230
+-- Data for Name: collections; Type: TABLE DATA; Schema: public; Owner: scdev
+--
+
+COPY public.collections (id, label, created_at, updated_at) FROM stdin;
+\.
+
+
+--
+-- TOC entry 2625 (class 0 OID 0)
+-- Dependencies: 229
+-- Name: collections_id_seq; Type: SEQUENCE SET; Schema: public; Owner: scdev
+--
+
+SELECT pg_catalog.setval('public.collections_id_seq', 19, true);
+
+
+--
+-- TOC entry 2554 (class 0 OID 16678)
+-- Dependencies: 211
+-- Data for Name: data_element_values; Type: TABLE DATA; Schema: public; Owner: scdev
+--
+
+COPY public.data_element_values (id, value, name, description, created_at, updated_at, data_element_id) FROM stdin;
+\.
+
+
+--
+-- TOC entry 2626 (class 0 OID 0)
+-- Dependencies: 210
+-- Name: data_element_values_id_seq; Type: SEQUENCE SET; Schema: public; Owner: scdev
+--
+
+SELECT pg_catalog.setval('public.data_element_values_id_seq', 6987, true);
+
+
+--
+-- TOC entry 2531 (class 0 OID 16476)
+-- Dependencies: 188
+-- Data for Name: data_elements; Type: TABLE DATA; Schema: public; Owner: scdev
+--
+
+COPY public.data_elements (uuid, name, de_type, de_table, de_column, created_at, updated_at, meta_data, search_data, description, source_data_set_id, keywords, "order", cdeid, user_keywords, not_mappable) FROM stdin;
+\.
+
+
+--
+-- TOC entry 2533 (class 0 OID 16487)
+-- Dependencies: 190
+-- Data for Name: de_external_defs; Type: TABLE DATA; Schema: public; Owner: scdev
+--
+
+COPY public.de_external_defs (id, uuid, external_source, description, created_at, updated_at, external_id, version, data_type, value_domain_type, short_name, search_data, instructions, definition, preferred_question_text) FROM stdin;
+\.
+
+
+--
+-- TOC entry 2564 (class 0 OID 41357)
+-- Dependencies: 221
+-- Data for Name: de_external_defs_external_element_tags; Type: TABLE DATA; Schema: public; Owner: scdev
+--
+
+COPY public.de_external_defs_external_element_tags (external_element_tag_id, de_external_def_id) FROM stdin;
+\.
+
+
+--
+-- TOC entry 2627 (class 0 OID 0)
+-- Dependencies: 189
+-- Name: de_external_defs_id_seq; Type: SEQUENCE SET; Schema: public; Owner: scdev
+--
+
+SELECT pg_catalog.setval('public.de_external_defs_id_seq', 29728, true);
+
+
+--
+-- TOC entry 2580 (class 0 OID 77335)
+-- Dependencies: 237
+-- Data for Name: de_external_defs_sst_data_elements; Type: TABLE DATA; Schema: public; Owner: scdev
+--
+
+COPY public.de_external_defs_sst_data_elements (de_external_def_id, sst_data_element_id) FROM stdin;
+\.
+
+
+--
+-- TOC entry 2530 (class 0 OID 16436)
+-- Dependencies: 187
+-- Data for Name: de_types; Type: TABLE DATA; Schema: public; Owner: scdev
+--
+
+COPY public.de_types (id, name, created_at, updated_at, db_type) FROM stdin;
+date	Date	2019-08-16 14:11:44.305219	2019-08-16 14:11:44.305219	\N
+number	Number	2019-08-16 14:11:44.314123	2019-08-16 14:11:44.314123	\N
+enum	Enum	2019-08-16 14:11:44.319333	2019-08-16 14:11:44.319333	\N
+pid	PID	2019-08-16 14:11:44.32214	2019-08-16 14:11:44.32214	\N
+text	Text	\N	\N	\N
+\.
+
+
+--
+-- TOC entry 2628 (class 0 OID 0)
+-- Dependencies: 186
+-- Name: de_types_id_seq; Type: SEQUENCE SET; Schema: public; Owner: scdev
+--
+
+SELECT pg_catalog.setval('public.de_types_id_seq', 1, false);
+
+
+--
+-- TOC entry 2575 (class 0 OID 68226)
+-- Dependencies: 232
+-- Data for Name: external_def_collections; Type: TABLE DATA; Schema: public; Owner: scdev
+--
+
+COPY public.external_def_collections (id, de_external_def_id, collection_id, created_at, updated_at) FROM stdin;
+\.
+
+
+--
+-- TOC entry 2629 (class 0 OID 0)
+-- Dependencies: 231
+-- Name: external_def_collections_id_seq; Type: SEQUENCE SET; Schema: public; Owner: scdev
+--
+
+SELECT pg_catalog.setval('public.external_def_collections_id_seq', 4202, true);
+
+
+--
+-- TOC entry 2558 (class 0 OID 16728)
+-- Dependencies: 215
+-- Data for Name: external_def_trigger_functions; Type: TABLE DATA; Schema: public; Owner: scdev
+--
+
+COPY public.external_def_trigger_functions (id) FROM stdin;
+\.
+
+
+--
+-- TOC entry 2630 (class 0 OID 0)
+-- Dependencies: 214
+-- Name: external_def_trigger_functions_id_seq; Type: SEQUENCE SET; Schema: public; Owner: scdev
+--
+
+SELECT pg_catalog.setval('public.external_def_trigger_functions_id_seq', 1, false);
+
+
+--
+-- TOC entry 2546 (class 0 OID 16614)
+-- Dependencies: 203
+-- Data for Name: external_def_values; Type: TABLE DATA; Schema: public; Owner: scdev
+--
+
+COPY public.external_def_values (id, code, name, description, version, external_id, de_external_def_id, created_at, updated_at, source, meaning_concept) FROM stdin;
+\.
+
+
+--
+-- TOC entry 2631 (class 0 OID 0)
+-- Dependencies: 202
+-- Name: external_def_values_id_seq; Type: SEQUENCE SET; Schema: public; Owner: scdev
+--
+
+SELECT pg_catalog.setval('public.external_def_values_id_seq', 582301, true);
+
+
+--
+-- TOC entry 2563 (class 0 OID 41348)
+-- Dependencies: 220
+-- Data for Name: external_element_tags; Type: TABLE DATA; Schema: public; Owner: scdev
+--
+
+COPY public.external_element_tags (id, name, parent_id) FROM stdin;
+\.
+
+
+--
+-- TOC entry 2632 (class 0 OID 0)
+-- Dependencies: 219
+-- Name: external_element_tags_id_seq; Type: SEQUENCE SET; Schema: public; Owner: scdev
+--
+
+SELECT pg_catalog.setval('public.external_element_tags_id_seq', 12077, true);
+
+
+--
+-- TOC entry 2539 (class 0 OID 16521)
+-- Dependencies: 196
+-- Data for Name: line_items; Type: TABLE DATA; Schema: public; Owner: scdev
+--
+
+COPY public.line_items (id, data_element_id, cart_id, created_at, updated_at) FROM stdin;
+\.
+
+
+--
+-- TOC entry 2633 (class 0 OID 0)
+-- Dependencies: 195
+-- Name: line_items_id_seq; Type: SEQUENCE SET; Schema: public; Owner: scdev
+--
+
+SELECT pg_catalog.setval('public.line_items_id_seq', 466, true);
+
+
+--
+-- TOC entry 2561 (class 0 OID 33156)
+-- Dependencies: 218
+-- Data for Name: pg_search_documents; Type: TABLE DATA; Schema: public; Owner: scdev
+--
+
+COPY public.pg_search_documents (id, content, searchable_type, created_at, updated_at, searchable_id) FROM stdin;
+\.
+
+
+--
+-- TOC entry 2634 (class 0 OID 0)
+-- Dependencies: 217
+-- Name: pg_search_documents_id_seq; Type: SEQUENCE SET; Schema: public; Owner: scdev
+--
+
+SELECT pg_catalog.setval('public.pg_search_documents_id_seq', 528, true);
+
+
+--
+-- TOC entry 2552 (class 0 OID 16667)
+-- Dependencies: 209
+-- Data for Name: raw_data_sets; Type: TABLE DATA; Schema: public; Owner: scdev
+--
+
+COPY public.raw_data_sets (id, uuid, name, description, source, created_at, updated_at, raw_file_name, raw_content_type, raw_file_size, raw_updated_at, dictionary_file_name, dictionary_content_type, dictionary_file_size, dictionary_updated_at) FROM stdin;
+\.
+
+
+--
+-- TOC entry 2635 (class 0 OID 0)
+-- Dependencies: 208
+-- Name: raw_data_sets_id_seq; Type: SEQUENCE SET; Schema: public; Owner: scdev
+--
+
+SELECT pg_catalog.setval('public.raw_data_sets_id_seq', 1, false);
+
+
+--
+-- TOC entry 2527 (class 0 OID 16418)
+-- Dependencies: 184
+-- Data for Name: schema_migrations; Type: TABLE DATA; Schema: public; Owner: scdev
+--
+
+COPY public.schema_migrations (version) FROM stdin;
+20150630145300
+20150630145459
+20150630145500
+20150630192808
+20150706164245
+20150706181846
+20150707220429
+20150708180943
+20150709190536
+20150716130446
+20150722152338
+20150722212712
+20150722212817
+20150724205136
+20150727185511
+20150730191350
+20150731011841
+20150804151525
+20150804151544
+20150805172854
+20150909215508
+20150910152028
+20150910152554
+20150910190711
+20150921210317
+20150923190546
+20150925151410
+20150925160847
+20150925175305
+20151014222044
+20151026202223
+20151026235406
+20151027145943
+20151027152515
+20151028180008
+20151104215436
+20151109053447
+20151109054809
+20151110183145
+20151110214932
+20151111030637
+20151111032136
+20151111032406
+20151111034941
+20151111150131
+20151111150132
+20151111172939
+20151111173037
+20151111194720
+20151111195225
+20151111201045
+20151111202929
+20151123171303
+20151123182849
+20151125160343
+20151201193121
+20151201210931
+20151201214544
+20151214193921
+20151218033229
+20151218205903
+20151222223312
+20151228180626
+20151228181816
+20160104224020
+20160106205636
+20160113001555
+20160113001657
+20160113164207
+20160114054254
+20160124012449
+20160125221538
+20160125232026
+20160126002941
+20160126032133
+20180508153837
+20180508154530
+20180510141930
+20180510172827
+20180510193919
+20180510212238
+20180511152720
+20180511153716
+20180511160912
+20180511165340
+20180523164126
+20180523164245
+20180523184732
+20180523223427
+20180605191859
+20180606194451
+20180606231822
+20180606232039
+20180622174307
+20180712202239
+20180713205727
+20180720190808
+20180730173518
+20180731151955
+20180822143936
+20180822145625
+20180913202336
+20181010191658
+20181023183343
+20181023185203
+20181025134049
+20181107204919
+20181115135008
+20181115135625
+20181115201054
+20181205204653
+20181207185619
+20190405134329
+20190410203030
+20190430191649
+20190510194805
+20190515160515
+20190516170809
+20190517155206
+20190619160735
+20190619162213
+20190619172749
+20190619192206
+20190619192402
+20190625171808
+20190625174007
+20190625185202
+20190625194554
+20191011172946
+20191011174922
+20191011210246
+20191217203035
+20191217210320
+20191217212726
+20191217220424
+20191217221110
+20191218030638
+20191218142639
+20191224030202
+20191224035317
+20191227162024
+20191229193752
+20200102035929
+20200105014238
+20200105194114
+20200113180323
+20200114190632
+20200324183640
+20200324184000
+\.
+
+
+--
+-- TOC entry 2559 (class 0 OID 16742)
+-- Dependencies: 216
+-- Data for Name: source_data_sets; Type: TABLE DATA; Schema: public; Owner: scdev
+--
+
+COPY public.source_data_sets (id, provider, description, file_name, file_size, dictionary_file_name, dictionary_file_size, status, created_at, updated_at, url, dd_url, source, source_id, table_name, search_data, user_email, user_id) FROM stdin;
+\.
+
+
+--
+-- TOC entry 2583 (class 0 OID 77462)
+-- Dependencies: 240
+-- Data for Name: source_data_sets_translation_definitions; Type: TABLE DATA; Schema: public; Owner: scdev
+--
+
+COPY public.source_data_sets_translation_definitions (source_data_set_id, translation_definition_id) FROM stdin;
+\.
+
+
+--
+-- TOC entry 2535 (class 0 OID 16499)
+-- Dependencies: 192
+-- Data for Name: sources; Type: TABLE DATA; Schema: public; Owner: scdev
+--
+
+COPY public.sources (id, name, description, created_at, updated_at, table_name) FROM stdin;
+\.
+
+
+--
+-- TOC entry 2636 (class 0 OID 0)
+-- Dependencies: 191
+-- Name: sources_id_seq; Type: SEQUENCE SET; Schema: public; Owner: scdev
+--
+
+SELECT pg_catalog.setval('public.sources_id_seq', 1, false);
+
+
+--
+-- TOC entry 2577 (class 0 OID 77263)
+-- Dependencies: 234
+-- Data for Name: sst_builders; Type: TABLE DATA; Schema: public; Owner: scdev
+--
+
+COPY public.sst_builders (id, name, description, output_file, created_at, updated_at, user_id, translation_type, source_id) FROM stdin;
+\.
+
+
+--
+-- TOC entry 2637 (class 0 OID 0)
+-- Dependencies: 233
+-- Name: sst_builders_id_seq; Type: SEQUENCE SET; Schema: public; Owner: scdev
+--
+
+SELECT pg_catalog.setval('public.sst_builders_id_seq', 54, true);
+
+
+--
+-- TOC entry 2579 (class 0 OID 77296)
+-- Dependencies: 236
+-- Data for Name: sst_data_elements; Type: TABLE DATA; Schema: public; Owner: scdev
+--
+
+COPY public.sst_data_elements (id, column_name, build_order, sst_builder_id, created_at, updated_at, data_element_id) FROM stdin;
+\.
+
+
+--
+-- TOC entry 2638 (class 0 OID 0)
+-- Dependencies: 235
+-- Name: sst_data_elements_id_seq; Type: SEQUENCE SET; Schema: public; Owner: scdev
+--
+
+SELECT pg_catalog.setval('public.sst_data_elements_id_seq', 111, true);
+
+
+--
+-- TOC entry 2566 (class 0 OID 41362)
+-- Dependencies: 223
+-- Data for Name: tags_trees; Type: TABLE DATA; Schema: public; Owner: scdev
+--
+
+COPY public.tags_trees (id, parent_id, child_id) FROM stdin;
+\.
+
+
+--
+-- TOC entry 2639 (class 0 OID 0)
+-- Dependencies: 222
+-- Name: tags_trees_id_seq; Type: SEQUENCE SET; Schema: public; Owner: scdev
+--
+
+SELECT pg_catalog.setval('public.tags_trees_id_seq', 1, false);
+
+
+--
+-- TOC entry 2544 (class 0 OID 16565)
+-- Dependencies: 201
+-- Data for Name: transformation_elements; Type: TABLE DATA; Schema: public; Owner: scdev
+--
+
+COPY public.transformation_elements (id, transformation_unit_id, data_element_id, "order", created_at, updated_at) FROM stdin;
+\.
+
+
+--
+-- TOC entry 2640 (class 0 OID 0)
+-- Dependencies: 200
+-- Name: transformation_elements_id_seq; Type: SEQUENCE SET; Schema: public; Owner: scdev
+--
+
+SELECT pg_catalog.setval('public.transformation_elements_id_seq', 1019, true);
+
+
+--
+-- TOC entry 2542 (class 0 OID 16553)
+-- Dependencies: 199
+-- Data for Name: transformation_units; Type: TABLE DATA; Schema: public; Owner: scdev
+--
+
+COPY public.transformation_units (id, transformation_definition_id, operation, ord, created_at, updated_at, translation_definition_id_legacy, alias, data_type, alias_id, alias_source, translation_definition_id) FROM stdin;
+\.
+
+
+--
+-- TOC entry 2641 (class 0 OID 0)
+-- Dependencies: 198
+-- Name: transformation_units_id_seq; Type: SEQUENCE SET; Schema: public; Owner: scdev
+--
+
+SELECT pg_catalog.setval('public.transformation_units_id_seq', 994, true);
+
+
+--
+-- TOC entry 2540 (class 0 OID 16542)
+-- Dependencies: 197
+-- Data for Name: translation_definitions; Type: TABLE DATA; Schema: public; Owner: scdev
+--
+
+COPY public.translation_definitions (created_at, updated_at, name, user_id, execution_status, execution_time, records_retrieved, destination, search_data, id, file_name, translation_type, description) FROM stdin;
+\.
+
+
+--
+-- TOC entry 2550 (class 0 OID 16645)
+-- Dependencies: 207
+-- Data for Name: users; Type: TABLE DATA; Schema: public; Owner: scdev
+--
+
+COPY public.users (id, email, encrypted_password, reset_password_token, reset_password_sent_at, remember_created_at, sign_in_count, current_sign_in_at, last_sign_in_at, current_sign_in_ip, last_sign_in_ip, first_name, last_name) FROM stdin;
+36	tester1@test.tst	$2a$10$5wThO1CN2MrPXBdwY1e68O2M/2YU9DtF.OjamH4.75ZXJTpC/lr4K	\N	\N	\N	1	2019-08-20 03:48:24.412091	2019-08-20 03:48:24.412091	172.20.10.13	172.20.10.13	Billy	Tulskie
+37	tester2@test.tst	$2a$10$7klIir7i8boxO0Zh.A58COjD2RNC3VD95VvCX/dQCbY47H6I5YgXi	01a7f2f284f36f6ba6fad6db71e441f0bc5a9d35b8be24cfe90061dfcaa817d4	2019-09-20 18:00:36.990523	\N	60	2020-05-08 20:05:53.821473	2020-04-20 15:11:30.651083	172.20.10.3	172.20.10.3	William	Tulskie
+35	bill@ordinaldata.com	$2a$10$FkO1IgpT6UPjGm/P30cf8Os5HT6jhlU0/1gBky8YSMTdoeidhrBVq	\N	\N	\N	2	2018-06-26 20:54:01.808675	2018-06-26 20:53:34.84306	127.0.0.1	127.0.0.1	Will	Tulskie
+1	wtulskie@lifedatasystems.com	$2a$10$BEAgUkX2q/C7xgJccJDzbOE9Qn6qDWUYpr8ZXTfXztheSwSGNrq1a	\N	\N	\N	154	2020-03-25 19:11:47.326057	2020-03-24 18:02:48.338002	127.0.0.1	172.20.10.3	Bill	Tulskie
+\.
+
+
+--
+-- TOC entry 2642 (class 0 OID 0)
+-- Dependencies: 206
+-- Name: users_id_seq; Type: SEQUENCE SET; Schema: public; Owner: scdev
+--
+
+SELECT pg_catalog.setval('public.users_id_seq', 37, true);
+
+
+--
+-- TOC entry 2556 (class 0 OID 16689)
+-- Dependencies: 213
+-- Data for Name: value_mappings; Type: TABLE DATA; Schema: public; Owner: scdev
+--
+
+COPY public.value_mappings (id, source, external_de_id, data_element_value_id, created_at, updated_at, data_element_id, external_value_id, external_id, de_external_def_id, external_value, is_locked) FROM stdin;
+\.
+
+
+--
+-- TOC entry 2643 (class 0 OID 0)
+-- Dependencies: 212
+-- Name: value_mappings_id_seq; Type: SEQUENCE SET; Schema: public; Owner: scdev
+--
+
+SELECT pg_catalog.setval('public.value_mappings_id_seq', 307, true);
+
+
+--
+-- TOC entry 2345 (class 2606 OID 16637)
+-- Name: admins_pkey; Type: CONSTRAINT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.admins
+    ADD CONSTRAINT admins_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 2373 (class 2606 OID 67190)
+-- Name: alt_names_pkey; Type: CONSTRAINT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.alt_names
+    ADD CONSTRAINT alt_names_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 2377 (class 2606 OID 67206)
+-- Name: alternative_question_texts_pkey; Type: CONSTRAINT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.alternative_question_texts
+    ADD CONSTRAINT alternative_question_texts_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 2312 (class 2606 OID 16433)
+-- Name: ar_internal_metadata_pkey; Type: CONSTRAINT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.ar_internal_metadata
+    ADD CONSTRAINT ar_internal_metadata_pkey PRIMARY KEY (key);
+
+
+--
+-- TOC entry 2324 (class 2606 OID 16518)
+-- Name: carts_pkey; Type: CONSTRAINT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.carts
+    ADD CONSTRAINT carts_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 2397 (class 2606 OID 77428)
+-- Name: cde_loaders_pkey; Type: CONSTRAINT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.cde_loaders
+    ADD CONSTRAINT cde_loaders_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 2380 (class 2606 OID 68179)
+-- Name: collections_pkey; Type: CONSTRAINT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.collections
+    ADD CONSTRAINT collections_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 2355 (class 2606 OID 16686)
+-- Name: data_element_values_pkey; Type: CONSTRAINT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.data_element_values
+    ADD CONSTRAINT data_element_values_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 2316 (class 2606 OID 16484)
+-- Name: data_elements_pkey; Type: CONSTRAINT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.data_elements
+    ADD CONSTRAINT data_elements_pkey PRIMARY KEY (uuid);
+
+
+--
+-- TOC entry 2340 (class 2606 OID 41589)
+-- Name: de_external_def_id_external_id; Type: CONSTRAINT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.external_def_values
+    ADD CONSTRAINT de_external_def_id_external_id UNIQUE (de_external_def_id, external_id);
+
+
+--
+-- TOC entry 2375 (class 2606 OID 67195)
+-- Name: de_external_defs_alt_names_pkey; Type: CONSTRAINT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.alt_names_de_external_defs
+    ADD CONSTRAINT de_external_defs_alt_names_pkey PRIMARY KEY (alt_name_id, de_external_def_id);
+
+
+--
+-- TOC entry 2368 (class 2606 OID 41591)
+-- Name: de_external_defs_external_element_tags_pkey; Type: CONSTRAINT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.de_external_defs_external_element_tags
+    ADD CONSTRAINT de_external_defs_external_element_tags_pkey PRIMARY KEY (external_element_tag_id, de_external_def_id);
+
+
+--
+-- TOC entry 2319 (class 2606 OID 16495)
+-- Name: de_external_defs_pkey; Type: CONSTRAINT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.de_external_defs
+    ADD CONSTRAINT de_external_defs_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 2314 (class 2606 OID 16588)
+-- Name: de_types_pkey; Type: CONSTRAINT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.de_types
+    ADD CONSTRAINT de_types_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 2383 (class 2606 OID 68231)
+-- Name: external_def_collections_pkey; Type: CONSTRAINT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.external_def_collections
+    ADD CONSTRAINT external_def_collections_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 2359 (class 2606 OID 16733)
+-- Name: external_def_trigger_functions_pkey; Type: CONSTRAINT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.external_def_trigger_functions
+    ADD CONSTRAINT external_def_trigger_functions_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 2342 (class 2606 OID 16622)
+-- Name: external_def_values_pkey; Type: CONSTRAINT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.external_def_values
+    ADD CONSTRAINT external_def_values_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 2366 (class 2606 OID 41356)
+-- Name: external_element_tags_pkey; Type: CONSTRAINT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.external_element_tags
+    ADD CONSTRAINT external_element_tags_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 2328 (class 2606 OID 16526)
+-- Name: line_items_pkey; Type: CONSTRAINT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.line_items
+    ADD CONSTRAINT line_items_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 2364 (class 2606 OID 33164)
+-- Name: pg_search_documents_pkey; Type: CONSTRAINT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.pg_search_documents
+    ADD CONSTRAINT pg_search_documents_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 2353 (class 2606 OID 16675)
+-- Name: raw_data_sets_pkey; Type: CONSTRAINT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.raw_data_sets
+    ADD CONSTRAINT raw_data_sets_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 2310 (class 2606 OID 16425)
+-- Name: schema_migrations_pkey; Type: CONSTRAINT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.schema_migrations
+    ADD CONSTRAINT schema_migrations_pkey PRIMARY KEY (version);
+
+
+--
+-- TOC entry 2362 (class 2606 OID 16752)
+-- Name: source_data_sets_pkey; Type: CONSTRAINT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.source_data_sets
+    ADD CONSTRAINT source_data_sets_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 2322 (class 2606 OID 16507)
+-- Name: sources_pkey; Type: CONSTRAINT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.sources
+    ADD CONSTRAINT sources_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 2389 (class 2606 OID 77271)
+-- Name: sst_builders_pkey; Type: CONSTRAINT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.sst_builders
+    ADD CONSTRAINT sst_builders_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 2392 (class 2606 OID 77304)
+-- Name: sst_data_elements_pkey; Type: CONSTRAINT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.sst_data_elements
+    ADD CONSTRAINT sst_data_elements_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 2370 (class 2606 OID 41367)
+-- Name: tags_trees_pkey; Type: CONSTRAINT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.tags_trees
+    ADD CONSTRAINT tags_trees_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 2338 (class 2606 OID 16570)
+-- Name: transformation_elements_pkey; Type: CONSTRAINT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.transformation_elements
+    ADD CONSTRAINT transformation_elements_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 2334 (class 2606 OID 16561)
+-- Name: transformation_units_pkey; Type: CONSTRAINT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.transformation_units
+    ADD CONSTRAINT transformation_units_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 2331 (class 2606 OID 33187)
+-- Name: translation_definitions_pkey; Type: CONSTRAINT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.translation_definitions
+    ADD CONSTRAINT translation_definitions_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 2351 (class 2606 OID 16658)
+-- Name: users_pkey; Type: CONSTRAINT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.users
+    ADD CONSTRAINT users_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 2357 (class 2606 OID 16697)
+-- Name: value_mappings_pkey; Type: CONSTRAINT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.value_mappings
+    ADD CONSTRAINT value_mappings_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 2371 (class 1259 OID 67410)
+-- Name: alt_names_lower_name; Type: INDEX; Schema: public; Owner: scdev
+--
+
+CREATE INDEX alt_names_lower_name ON public.alt_names USING btree (lower((name)::text));
+
+
+--
+-- TOC entry 2393 (class 1259 OID 77340)
+-- Name: ext_de_sst_de; Type: INDEX; Schema: public; Owner: scdev
+--
+
+CREATE UNIQUE INDEX ext_de_sst_de ON public.de_external_defs_sst_data_elements USING btree (de_external_def_id, sst_data_element_id);
+
+
+--
+-- TOC entry 2384 (class 1259 OID 68244)
+-- Name: external_def_collections_unique_ids; Type: INDEX; Schema: public; Owner: scdev
+--
+
+CREATE UNIQUE INDEX external_def_collections_unique_ids ON public.external_def_collections USING btree (de_external_def_id, collection_id);
+
+
+--
+-- TOC entry 2400 (class 1259 OID 77465)
+-- Name: idx_sds_id; Type: INDEX; Schema: public; Owner: scdev
+--
+
+CREATE INDEX idx_sds_id ON public.source_data_sets_translation_definitions USING btree (source_data_set_id);
+
+
+--
+-- TOC entry 2401 (class 1259 OID 77467)
+-- Name: idx_source_ds_trans_def; Type: INDEX; Schema: public; Owner: scdev
+--
+
+CREATE UNIQUE INDEX idx_source_ds_trans_def ON public.source_data_sets_translation_definitions USING btree (source_data_set_id, translation_definition_id);
+
+
+--
+-- TOC entry 2402 (class 1259 OID 77466)
+-- Name: idx_trans_def_id; Type: INDEX; Schema: public; Owner: scdev
+--
+
+CREATE INDEX idx_trans_def_id ON public.source_data_sets_translation_definitions USING btree (translation_definition_id);
+
+
+--
+-- TOC entry 2346 (class 1259 OID 16638)
+-- Name: index_admins_on_email; Type: INDEX; Schema: public; Owner: scdev
+--
+
+CREATE UNIQUE INDEX index_admins_on_email ON public.admins USING btree (email);
+
+
+--
+-- TOC entry 2347 (class 1259 OID 16639)
+-- Name: index_admins_on_reset_password_token; Type: INDEX; Schema: public; Owner: scdev
+--
+
+CREATE UNIQUE INDEX index_admins_on_reset_password_token ON public.admins USING btree (reset_password_token);
+
+
+--
+-- TOC entry 2378 (class 1259 OID 67207)
+-- Name: index_alternative_question_texts_on_de_external_def_id; Type: INDEX; Schema: public; Owner: scdev
+--
+
+CREATE INDEX index_alternative_question_texts_on_de_external_def_id ON public.alternative_question_texts USING btree (de_external_def_id);
+
+
+--
+-- TOC entry 2398 (class 1259 OID 77439)
+-- Name: index_cde_loaders_on_collection_id; Type: INDEX; Schema: public; Owner: scdev
+--
+
+CREATE INDEX index_cde_loaders_on_collection_id ON public.cde_loaders USING btree (collection_id);
+
+
+--
+-- TOC entry 2399 (class 1259 OID 77440)
+-- Name: index_cde_loaders_on_user_id; Type: INDEX; Schema: public; Owner: scdev
+--
+
+CREATE INDEX index_cde_loaders_on_user_id ON public.cde_loaders USING btree (user_id);
+
+
+--
+-- TOC entry 2381 (class 1259 OID 68180)
+-- Name: index_collections_on_label; Type: INDEX; Schema: public; Owner: scdev
+--
+
+CREATE UNIQUE INDEX index_collections_on_label ON public.collections USING btree (label);
+
+
+--
+-- TOC entry 2317 (class 1259 OID 16759)
+-- Name: index_data_elements_on_source_data_set_id; Type: INDEX; Schema: public; Owner: scdev
+--
+
+CREATE INDEX index_data_elements_on_source_data_set_id ON public.data_elements USING btree (source_data_set_id);
+
+
+--
+-- TOC entry 2320 (class 1259 OID 16496)
+-- Name: index_de_external_defs_on_uuid; Type: INDEX; Schema: public; Owner: scdev
+--
+
+CREATE INDEX index_de_external_defs_on_uuid ON public.de_external_defs USING btree (uuid);
+
+
+--
+-- TOC entry 2394 (class 1259 OID 77338)
+-- Name: index_de_external_defs_sst_data_elements_on_de_external_def_id; Type: INDEX; Schema: public; Owner: scdev
+--
+
+CREATE INDEX index_de_external_defs_sst_data_elements_on_de_external_def_id ON public.de_external_defs_sst_data_elements USING btree (de_external_def_id);
+
+
+--
+-- TOC entry 2395 (class 1259 OID 77339)
+-- Name: index_de_external_defs_sst_data_elements_on_sst_data_element_id; Type: INDEX; Schema: public; Owner: scdev
+--
+
+CREATE INDEX index_de_external_defs_sst_data_elements_on_sst_data_element_id ON public.de_external_defs_sst_data_elements USING btree (sst_data_element_id);
+
+
+--
+-- TOC entry 2385 (class 1259 OID 68243)
+-- Name: index_external_def_collections_on_collection_id; Type: INDEX; Schema: public; Owner: scdev
+--
+
+CREATE INDEX index_external_def_collections_on_collection_id ON public.external_def_collections USING btree (collection_id);
+
+
+--
+-- TOC entry 2386 (class 1259 OID 68242)
+-- Name: index_external_def_collections_on_de_external_def_id; Type: INDEX; Schema: public; Owner: scdev
+--
+
+CREATE INDEX index_external_def_collections_on_de_external_def_id ON public.external_def_collections USING btree (de_external_def_id);
+
+
+--
+-- TOC entry 2343 (class 1259 OID 16715)
+-- Name: index_external_def_values_on_de_external_def_id; Type: INDEX; Schema: public; Owner: scdev
+--
+
+CREATE INDEX index_external_def_values_on_de_external_def_id ON public.external_def_values USING btree (de_external_def_id);
+
+
+--
+-- TOC entry 2325 (class 1259 OID 16528)
+-- Name: index_line_items_on_cart_id; Type: INDEX; Schema: public; Owner: scdev
+--
+
+CREATE INDEX index_line_items_on_cart_id ON public.line_items USING btree (cart_id);
+
+
+--
+-- TOC entry 2326 (class 1259 OID 16527)
+-- Name: index_line_items_on_data_element_id; Type: INDEX; Schema: public; Owner: scdev
+--
+
+CREATE INDEX index_line_items_on_data_element_id ON public.line_items USING btree (data_element_id);
+
+
+--
+-- TOC entry 2360 (class 1259 OID 33167)
+-- Name: index_source_data_sets_on_search_data; Type: INDEX; Schema: public; Owner: scdev
+--
+
+CREATE INDEX index_source_data_sets_on_search_data ON public.source_data_sets USING gin (search_data);
+
+
+--
+-- TOC entry 2387 (class 1259 OID 77316)
+-- Name: index_sst_builders_on_user_id; Type: INDEX; Schema: public; Owner: scdev
+--
+
+CREATE INDEX index_sst_builders_on_user_id ON public.sst_builders USING btree (user_id);
+
+
+--
+-- TOC entry 2390 (class 1259 OID 77310)
+-- Name: index_sst_data_elements_on_sst_builder_id; Type: INDEX; Schema: public; Owner: scdev
+--
+
+CREATE INDEX index_sst_data_elements_on_sst_builder_id ON public.sst_data_elements USING btree (sst_builder_id);
+
+
+--
+-- TOC entry 2335 (class 1259 OID 16573)
+-- Name: index_transformation_elements_on_data_element_id; Type: INDEX; Schema: public; Owner: scdev
+--
+
+CREATE INDEX index_transformation_elements_on_data_element_id ON public.transformation_elements USING btree (data_element_id);
+
+
+--
+-- TOC entry 2336 (class 1259 OID 16571)
+-- Name: index_transformation_elements_on_transformation_unit_id; Type: INDEX; Schema: public; Owner: scdev
+--
+
+CREATE INDEX index_transformation_elements_on_transformation_unit_id ON public.transformation_elements USING btree (transformation_unit_id);
+
+
+--
+-- TOC entry 2332 (class 1259 OID 16562)
+-- Name: index_transformation_units_on_transformation_definition_id; Type: INDEX; Schema: public; Owner: scdev
+--
+
+CREATE INDEX index_transformation_units_on_transformation_definition_id ON public.transformation_units USING btree (transformation_definition_id);
+
+
+--
+-- TOC entry 2329 (class 1259 OID 33166)
+-- Name: index_translation_definitions_on_search_data; Type: INDEX; Schema: public; Owner: scdev
+--
+
+CREATE INDEX index_translation_definitions_on_search_data ON public.translation_definitions USING gin (search_data);
+
+
+--
+-- TOC entry 2348 (class 1259 OID 16659)
+-- Name: index_users_on_email; Type: INDEX; Schema: public; Owner: scdev
+--
+
+CREATE UNIQUE INDEX index_users_on_email ON public.users USING btree (email);
+
+
+--
+-- TOC entry 2349 (class 1259 OID 16660)
+-- Name: index_users_on_reset_password_token; Type: INDEX; Schema: public; Owner: scdev
+--
+
+CREATE UNIQUE INDEX index_users_on_reset_password_token ON public.users USING btree (reset_password_token);
+
+
+--
+-- TOC entry 2411 (class 2620 OID 16738)
+-- Name: set_de_search_data; Type: TRIGGER; Schema: public; Owner: scdev
+--
+
+CREATE TRIGGER set_de_search_data BEFORE INSERT OR UPDATE ON public.data_elements FOR EACH ROW EXECUTE PROCEDURE public.set_de_ts_data();
+
+
+--
+-- TOC entry 2412 (class 2620 OID 16739)
+-- Name: set_external_de_search_data; Type: TRIGGER; Schema: public; Owner: scdev
+--
+
+CREATE TRIGGER set_external_de_search_data BEFORE INSERT OR UPDATE ON public.de_external_defs FOR EACH ROW EXECUTE PROCEDURE public.set_external_de_ts_data();
+
+
+--
+-- TOC entry 2409 (class 2606 OID 77429)
+-- Name: fk_rails_290b42eafd; Type: FK CONSTRAINT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.cde_loaders
+    ADD CONSTRAINT fk_rails_290b42eafd FOREIGN KEY (collection_id) REFERENCES public.collections(id);
+
+
+--
+-- TOC entry 2407 (class 2606 OID 77305)
+-- Name: fk_rails_4bf61de936; Type: FK CONSTRAINT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.sst_data_elements
+    ADD CONSTRAINT fk_rails_4bf61de936 FOREIGN KEY (sst_builder_id) REFERENCES public.sst_builders(id);
+
+
+--
+-- TOC entry 2406 (class 2606 OID 77317)
+-- Name: fk_rails_5e36c4adcb; Type: FK CONSTRAINT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.sst_builders
+    ADD CONSTRAINT fk_rails_5e36c4adcb FOREIGN KEY (user_id) REFERENCES public.users(id);
+
+
+--
+-- TOC entry 2408 (class 2606 OID 77311)
+-- Name: fk_rails_69e8dfb64d; Type: FK CONSTRAINT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.sst_data_elements
+    ADD CONSTRAINT fk_rails_69e8dfb64d FOREIGN KEY (data_element_id) REFERENCES public.data_elements(uuid);
+
+
+--
+-- TOC entry 2405 (class 2606 OID 68237)
+-- Name: fk_rails_775b13f416; Type: FK CONSTRAINT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.external_def_collections
+    ADD CONSTRAINT fk_rails_775b13f416 FOREIGN KEY (collection_id) REFERENCES public.collections(id);
+
+
+--
+-- TOC entry 2404 (class 2606 OID 68232)
+-- Name: fk_rails_9334d154d3; Type: FK CONSTRAINT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.external_def_collections
+    ADD CONSTRAINT fk_rails_9334d154d3 FOREIGN KEY (de_external_def_id) REFERENCES public.de_external_defs(id);
+
+
+--
+-- TOC entry 2410 (class 2606 OID 77434)
+-- Name: fk_rails_9818d231d2; Type: FK CONSTRAINT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.cde_loaders
+    ADD CONSTRAINT fk_rails_9818d231d2 FOREIGN KEY (user_id) REFERENCES public.users(id);
+
+
+--
+-- TOC entry 2403 (class 2606 OID 16754)
+-- Name: fk_rails_e29a9ea66d; Type: FK CONSTRAINT; Schema: public; Owner: scdev
+--
+
+ALTER TABLE ONLY public.data_elements
+    ADD CONSTRAINT fk_rails_e29a9ea66d FOREIGN KEY (source_data_set_id) REFERENCES public.source_data_sets(id);
+
+
+--
+-- TOC entry 2591 (class 0 OID 0)
+-- Dependencies: 9
+-- Name: SCHEMA public; Type: ACL; Schema: -; Owner: postgres
+--
+
+REVOKE ALL ON SCHEMA public FROM PUBLIC;
+REVOKE ALL ON SCHEMA public FROM postgres;
+GRANT ALL ON SCHEMA public TO postgres;
+GRANT ALL ON SCHEMA public TO PUBLIC;
+
+
+-- Completed on 2020-05-09 17:49:17 EDT
+
+--
+-- PostgreSQL database dump complete
+--
+
